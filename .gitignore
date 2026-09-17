@@ -213,9 +213,11 @@ data/
 runs/
 downstream_examples/common_data/
 downstream_examples/*/assets/
+downstream_examples/*/assets
 # Local credential file — never commit (contains a GitHub PAT)
 toke.txt
 
 # Session transcripts — may contain secrets
 *.chat
 .claude/
+downstream_examples/*/inference_results/
