@@ -115,6 +115,44 @@ The output ![Sample output of Surya for 2014-01-07](../../assets/ar_seg_results.
 The dataset is hosted on Hugging Face: [nasa-ibm-ai4science/surya-bench-ar-segmentation](https://huggingface.co/datasets/nasa-ibm-ai4science/surya-bench-ar-segmentation)
 For more details on mask creation methodology, see [SuryaBench AR Segmentation](https://github.com/NASA-IMPACT/SuryaBench/tree/main/ar_segmentation).
 
+### Finetuning on a single day
+
+`config_feb15_2013.yaml` trains on one day and validates on a different held-out day:
+
+| | Date | Official split |
+|---|---|---|
+| train | 2013-02-15 | `train.csv` -- earliest 2013 date in the train split |
+| validation | 2013-01-15 | `validation.csv` |
+
+```bash
+torchrun --nnodes=1 --nproc_per_node=1 --standalone finetune.py \
+    --config_path ./config_feb15_2013.yaml
+```
+
+The shipped indices have no January 2013 rows in the train split, and no single-day
+index exists for either date, so the config uses generated indices under
+`assets/single_day/`. Regenerate them (or make indices for another day) with:
+
+```bash
+python make_day_index.py --date 2013-02-15
+python make_day_index.py --date 2013-01-15
+```
+
+The script lists the S3 bucket for the requested day, pulls the matching mask rows out
+of whichever shipped AR split contains that date, and reports how many samples survive
+the dataset's validity filter -- use that number for `iters_per_epoch_*`.
+
+Both days give **21 samples**. SDO has a daily gap at 21:00, leaving 23 of 24 hourly
+masks, and the `+60 min` target requirement then drops 20:00 (its target is the missing
+21:00) and 23:00 (its target falls on the next day). Each generated SDO index matches
+the corresponding shipped index exactly -- 119 files for 2013-02-15 against the train
+index, 116 for 2013-01-15 against the valid index.
+
+The two days come from different official splits, so validation is genuinely held out --
+but 21 samples from a single day covers one active-region configuration, so read the
+metric as a smoke signal, not as real performance. Checkpoints go to
+`checkpoints_feb15_2013/` so they do not overwrite a full run.
+
 ### Relocating the AR mask files
 
 The AR label masks (`.h5`) are read from `data.ar_mask_root_path`, which defaults to
