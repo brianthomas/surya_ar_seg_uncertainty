@@ -10,6 +10,7 @@ Copied from `~/Code/Surya` (git `78b827e`).
 
 ```
 pyproject.toml, uv.lock         # environment definition (unmodified)
+environment.yml	                # Conda environment (alt) 
 surya/                          # the full surya package (datasets, models, utils)
 tests/                          # test_surya.py — install sanity check
 assets/                         # README figures
