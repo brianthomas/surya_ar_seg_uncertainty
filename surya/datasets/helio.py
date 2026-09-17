@@ -1,7 +1,11 @@
 import os
+import re
+import shutil
+import socket
 import sys
 import random
 from datetime import datetime
+from uuid import uuid4
 import torch
 import numpy as np
 import skimage.measure
@@ -10,6 +14,15 @@ import pandas as pd
 from logging import Logger
 from torch.utils.data import Dataset
 from surya.utils.distributed import get_rank
+from surya.utils.s3 import (
+    ClientError,
+    S3_DENIED_CODES,
+    TransferConfig,
+    default_scratch_dir,
+    is_s3_path,
+    make_s3_client,
+    parse_s3_uri,
+)
 from surya.utils.log import create_logger
 from functools import cache
 
@@ -224,6 +237,10 @@ class HelioNetCDFDataset(Dataset):
         pooling: int | None = None,
         random_vert_flip: bool = False,
         sdo_data_root_path: str = None,
+        s3_anon: bool = False,
+        s3_scratch_dir: str | None = None,
+        s3_boto3_max_concurrency: int = 4,
+        s3_boto3_part_size_mb: int = 64,
     ):
         self.scalers = scalers
         self.phase = phase
@@ -236,6 +253,18 @@ class HelioNetCDFDataset(Dataset):
         self.pooling = pooling if pooling is not None else 1
         self.random_vert_flip = random_vert_flip
         self.sdo_data_root_path = sdo_data_root_path
+        self.s3_anon = s3_anon
+        self.s3_boto3_max_concurrency = s3_boto3_max_concurrency
+        self.s3_boto3_part_size_mb = s3_boto3_part_size_mb
+        self.s3_scratch_dir = s3_scratch_dir or default_scratch_dir()
+        self._host = socket.gethostname()
+        # Created lazily, keyed by pid: a client built before a DataLoader forks
+        # must not be shared with its children. See _s3_client.
+        self._s3_client_obj = None
+        self._s3_client_pid = None
+        if is_s3_path(self.sdo_data_root_path):
+            os.makedirs(self.s3_scratch_dir, exist_ok=True)
+            self._reap_stale_scratch()
         if self.channels is None:
             # AIA + HMI channels
             self.channels = [
@@ -473,23 +502,133 @@ class HelioNetCDFDataset(Dataset):
         self, filepath: str, timestep: pd.Timestamp, channels: list[str]
     ) -> np.ndarray:
         """
+        Accepts local paths and S3 URIs. S3 objects are downloaded whole, read, and
+        deleted; see _read_s3_via_download for why they are not streamed or cached.
+
         Args:
-            filepath: String or Pathlike. Points to NetCDF file to open.
+            filepath: String or Pathlike. Points to NetCDF file to open. Either a
+                local path (absolute, or relative to sdo_data_root_path) or an
+                ``s3://bucket/key`` URI.
             timestep: Identifies timestamp to retrieve.
         Returns:
             Numpy array of shape (C, H, W).
         """
         self.logger.info(f"Reading file {filepath}.")
-        
-        if self.sdo_data_root_path and not os.path.isabs(filepath):
+
+        # is_s3_path is checked first because os.path.isabs("s3://...") is False:
+        # without it a local root would be prepended to an already-complete URI.
+        if not is_s3_path(filepath) and self.sdo_data_root_path and not os.path.isabs(filepath):
             filepath = os.path.join(self.sdo_data_root_path, filepath)
-        
+
+        if is_s3_path(filepath):
+            return self._read_s3_via_download(filepath, channels)
+
         with xr.open_dataset(
             filepath, engine="h5netcdf", chunks=None, cache=False,
         ) as ds:
             data = ds[channels].to_array().load().to_numpy()
-        
+
         return data
+
+    def _read_s3_via_download(self, s3_uri: str, channels: list[str]) -> np.ndarray:
+        """Download an S3 object to scratch, read it, and delete it.
+
+        Nothing is cached between reads. The training index holds ~70k timesteps of
+        ~600 MB each, so under a shuffled sampler a cache sized to any real disk has a
+        hit rate near zero -- it would buy nothing and add eviction races. Because the
+        scratch file is private to this process, there is also no publish/rename dance:
+        no other process ever learns its name.
+
+        Args:
+            s3_uri: Object to read, as ``s3://bucket/key``.
+            channels: Variable names to extract, stacked into (C, H, W).
+
+        Returns:
+            Numpy array of shape (C, H, W).
+        """
+        scratch = self._scratch_dir()
+        local_path = os.path.join(scratch, f"{uuid4().hex}.nc")
+        try:
+            self._download_s3_object(s3_uri, local_path)
+            with xr.open_dataset(
+                local_path, engine="h5netcdf", chunks=None, cache=False,
+            ) as ds:
+                return ds[channels].to_array().load().to_numpy()
+        finally:
+            try:
+                os.remove(local_path)
+            except OSError:
+                pass
+
+    def _scratch_dir(self) -> str:
+        """Return this process's private scratch directory, creating it if needed."""
+        path = os.path.join(self.s3_scratch_dir, f"{self._host}-pid-{os.getpid()}")
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def _reap_stale_scratch(self) -> None:
+        """Delete scratch directories belonging to processes that no longer exist.
+
+        _read_s3_via_download cleans up after itself, but a worker killed outright
+        (SIGKILL, OOM) leaks its in-flight file. Only directories tagged with this
+        host are considered, so pointing s3_scratch_dir at a shared mount is safe.
+        A dead pid cannot be mid-write, so this can never delete a live file.
+
+        Caveat: pid reuse can make a stale directory look live, leaking one file
+        until a later run happens to see the pid free.
+        """
+        for name in os.listdir(self.s3_scratch_dir):
+            match = re.fullmatch(rf"{re.escape(self._host)}-pid-(\d+)", name)
+            if match is None:
+                continue  # another host's directory: not ours to judge
+            try:
+                os.kill(int(match.group(1)), 0)
+            except ProcessLookupError:
+                shutil.rmtree(os.path.join(self.s3_scratch_dir, name), ignore_errors=True)
+            except PermissionError:
+                pass  # alive, owned by a different user
+
+    def _s3_client(self):
+        """Return a boto3 S3 client belonging to the current process.
+
+        DataLoader workers are forked, and a client built in the parent carries
+        sockets and SSL contexts that siblings would then share -- which surfaces as
+        intermittent connection resets under concurrency rather than a clean failure.
+        Re-creating whenever the pid changes keeps each process on its own pool.
+        """
+        pid = os.getpid()
+        if self._s3_client_obj is None or self._s3_client_pid != pid:
+            self._s3_client_obj = make_s3_client(
+                anon=self.s3_anon,
+                region=None,  # resolved from the environment or instance metadata
+                pool_size=max(8, 2 * self.s3_boto3_max_concurrency),
+                max_attempts=10,
+            )
+            self._s3_client_pid = pid
+        return self._s3_client_obj
+
+    def _download_s3_object(self, s3_uri: str, local_path: str) -> None:
+        """Download an S3 object to `local_path` using parallel multipart transfer."""
+        bucket, key = parse_s3_uri(s3_uri)
+        part_size = self.s3_boto3_part_size_mb * 1024 * 1024
+        transfer_cfg = TransferConfig(
+            multipart_threshold=part_size,
+            multipart_chunksize=part_size,
+            max_concurrency=self.s3_boto3_max_concurrency,
+            use_threads=True,
+            io_chunksize=1024 * 1024,
+        )
+        try:
+            self._s3_client().download_file(bucket, key, local_path, Config=transfer_cfg)
+        except ClientError as e:
+            code = str(e.response.get("Error", {}).get("Code", ""))
+            if not self.s3_anon and code in S3_DENIED_CODES:
+                raise PermissionError(
+                    f"Access denied reading {s3_uri} with the ambient AWS credentials.\n"
+                    "If this is a public bucket (such as s3://nasa-surya-bench), set "
+                    "`data.s3_anon: true` in your config to read it without signing."
+                ) from e
+            raise
 
     @cache
     def transformation_inputs(self) -> (np.ndarray, np.ndarray, np.ndarray, np.ndarray):

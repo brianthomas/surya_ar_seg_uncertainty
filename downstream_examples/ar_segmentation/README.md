@@ -115,6 +115,41 @@ The output ![Sample output of Surya for 2014-01-07](../../assets/ar_seg_results.
 The dataset is hosted on Hugging Face: [nasa-ibm-ai4science/surya-bench-ar-segmentation](https://huggingface.co/datasets/nasa-ibm-ai4science/surya-bench-ar-segmentation)
 For more details on mask creation methodology, see [SuryaBench AR Segmentation](https://github.com/NASA-IMPACT/SuryaBench/tree/main/ar_segmentation).
 
+### Reading SDO input from S3
+
+`data.sdo_data_root_path` accepts an `s3://` URI as well as a local directory. The
+default config reads the public bucket directly:
+
+```yaml
+data:
+  sdo_data_root_path: s3://nasa-surya-bench
+  s3_anon: true          # public bucket: without this, ambient AWS credentials sign
+                         # the request and it is rejected with 403
+  s3_scratch_dir: null   # null -> $SURYA_S3_SCRATCH, $SCRATCH, $TMPDIR, system temp
+```
+
+The bucket is laid out as `YYYY/MM/YYYYMMDD_HHMM.nc`, matching the `path` column of
+`assets/*_index_surya_1_0.csv`, so no index files need editing. Only the SDO inputs
+come from S3; the AR label masks are still read from `assets/` (see Setup above).
+
+Each object is downloaded whole, read, and deleted. Peak scratch usage is therefore
+`num_data_workers x world_size x ~0.6 GB` (~5 GB at the default 8 workers), not the
+size of the dataset. Files are not cached between reads: at ~600 MB per timestep and
+~70k training timesteps, no realistic disk holds enough of the dataset for a shuffled
+sampler to hit it.
+
+Reading one 13-channel timestep costs roughly 2 s of download plus 5 s of HDF5 decode,
+so throughput is bound by decode rather than by S3 -- **`num_data_workers` is the knob
+to raise, not `s3_boto3_max_concurrency`.**
+
+If you repeatedly train on a small fixed subset, stage it once and use a local path
+instead -- faster than any download-per-read and easier to reason about:
+
+```bash
+aws s3 cp --recursive --no-sign-request s3://nasa-surya-bench/2011/02/ /scratch/sdo/2011/02/
+# then set sdo_data_root_path: /scratch/sdo
+```
+
 ## File Structure
 
 ```

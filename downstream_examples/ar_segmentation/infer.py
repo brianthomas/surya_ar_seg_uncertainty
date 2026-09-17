@@ -148,6 +148,14 @@ def get_dataloader(config, scalers, data_type="test",num_samples=3):
 
     index_path = config["data"]["valid_data_path"]
 
+    # Read via .get() so configs predating S3 support keep working unchanged.
+    s3_kwargs = dict(
+        s3_anon=config["data"].get("s3_anon", False),
+        s3_scratch_dir=config["data"].get("s3_scratch_dir"),
+        s3_boto3_max_concurrency=config["data"].get("s3_boto3_max_concurrency", 4),
+        s3_boto3_part_size_mb=config["data"].get("s3_boto3_part_size_mb", 64),
+    )
+
     dataset = HelioNetCDFDataset(
         sdo_data_root_path=config["data"]["sdo_data_root_path"],
         index_path=index_path,
@@ -158,6 +166,7 @@ def get_dataloader(config, scalers, data_type="test",num_samples=3):
         channels=config["data"]["channels"],
         scalers=scalers,
         phase="valid",
+        **s3_kwargs,
     )
 
     assert len(dataset) > 0, "No data found"

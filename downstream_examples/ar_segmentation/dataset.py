@@ -10,6 +10,10 @@ import torch
 # Append base path.  May need to be modified if the folder structure changes
 from surya.datasets.helio import HelioNetCDFDataset
 
+# Where download_data.sh unpacks the AR segmentation dataset by default. Relative to
+# the working directory, so runs are expected to start from this example's folder.
+DEFAULT_AR_MASK_ROOT = "./assets/surya-bench-ar-segmentation"
+
 
 class ArDSDataset(HelioNetCDFDataset):
     def __init__(
@@ -29,7 +33,11 @@ class ArDSDataset(HelioNetCDFDataset):
         phase="train",
         #### Put your donwnstream (DS) specific parameters below this line
         ds_ar_index_paths: list = None,
+        ar_mask_root_path: str | None = None,
+        **helio_kwargs,
     ):
+        # helio_kwargs forwards options this class does not re-declare (S3 access,
+        # pooling, ...) straight through to HelioNetCDFDataset.
         super().__init__(
             sdo_data_root_path=sdo_data_root_path,
             index_path=index_path,
@@ -42,7 +50,17 @@ class ArDSDataset(HelioNetCDFDataset):
             use_latitude_in_learned_flow=use_latitude_in_learned_flow,
             channels=channels,
             phase=phase,
+            **helio_kwargs,
         )
+
+        self.ar_mask_root_path = ar_mask_root_path or DEFAULT_AR_MASK_ROOT
+        if not os.path.isdir(self.ar_mask_root_path):
+            raise FileNotFoundError(
+                f"AR mask directory not found: {self.ar_mask_root_path}\n"
+                "Download it with ./download_data.sh (optionally setting AR_MASK_DIR to "
+                "choose where it lands), then point data.ar_mask_root_path at that "
+                "directory. Note the default is relative to the working directory."
+            )
 
         # Load ds index and find intersection with HelioFM index
         self.create_logger()
@@ -105,7 +123,7 @@ class ArDSDataset(HelioNetCDFDataset):
         base_dictionary["ts"] = np.stack([base_dictionary["ts"]], axis=1)
         file_path = self.ar_valid_indices.iloc[idx]["file_path"]
 
-        file_path = os.path.join("./assets/surya-bench-ar-segmentation", file_path)
+        file_path = os.path.join(self.ar_mask_root_path, file_path)
 
         try:
             with h5py.File(file_path, "r") as f:

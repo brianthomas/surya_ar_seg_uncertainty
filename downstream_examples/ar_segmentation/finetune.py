@@ -396,6 +396,14 @@ def get_dataloaders(config, scalers):
     else:
         channels = config["data"]["channels"]
 
+    # Read via .get() so configs predating S3 support keep working unchanged.
+    s3_kwargs = dict(
+        s3_anon=config["data"].get("s3_anon", False),
+        s3_scratch_dir=config["data"].get("s3_scratch_dir"),
+        s3_boto3_max_concurrency=config["data"].get("s3_boto3_max_concurrency", 4),
+        s3_boto3_part_size_mb=config["data"].get("s3_boto3_part_size_mb", 64),
+    )
+
     train_dataset = ArDSDataset(
         sdo_data_root_path=config["data"]["sdo_data_root_path"],
         index_path=config["data"]["train_data_path"],
@@ -411,6 +419,8 @@ def get_dataloaders(config, scalers):
         phase="train",
         #### Put your donwnstream (DS) specific parameters below this line
         ds_ar_index_paths=config["data"]["ar_index_train"],
+        ar_mask_root_path=config["data"].get("ar_mask_root_path"),
+        **s3_kwargs,
     )
     valid_dataset = ArDSDataset(
         sdo_data_root_path=config["data"]["sdo_data_root_path"],
@@ -427,6 +437,8 @@ def get_dataloaders(config, scalers):
         phase="valid",
         #### Put your donwnstream (DS) specific parameters below this line
         ds_ar_index_paths=config["data"]["ar_index_valid"],
+        ar_mask_root_path=config["data"].get("ar_mask_root_path"),
+        **s3_kwargs,
     )
 
     print0(f"Total dataset size: {len(valid_dataset)}")

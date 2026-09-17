@@ -2,7 +2,17 @@
 job_id: AR-segmentation_lora_r32_a64_d0.1
 data:
   # Use this to point at the paths of HelioFM data indices
-  sdo_data_root_path: /nobackupnfs1/sroy14/processed_data/Helio/nc
+  sdo_data_root_path: s3://nasa-surya-bench
+  # --- S3 (only used when sdo_data_root_path is an s3:// URI) ---
+  # nasa-surya-bench is public. Left false, the ambient AWS credentials are used to
+  # sign the request and the bucket rejects it with 403.
+  s3_anon: true
+  # Where objects are staged before reading. Each is deleted immediately after use,
+  # so peak usage is num_data_workers x world_size x ~0.6 GB, not the dataset size.
+  # null -> $SURYA_S3_SCRATCH, $SCRATCH, $TMPDIR, then the system temp dir.
+  s3_scratch_dir: null
+  s3_boto3_max_concurrency: 4
+  s3_boto3_part_size_mb: 64
   train_data_path: ./assets/train_index_surya_1_0.csv
   valid_data_path: ./assets/valid_index_surya_1_0.csv
   channels: ['aia94', 'aia131', 'aia171', 'aia193', 'aia211', 'aia304', 'aia335', 'aia1600', 'hmi_m', 'hmi_bx', 'hmi_by', 'hmi_bz', 'hmi_v']
@@ -14,6 +24,10 @@ data:
   prefetch_factor: 2
   scalers_path: ./assets/scalers.yaml
   #### Put your donwnstream (DS) specific parameters below this line
+  # Directory holding the downloaded AR mask .h5 files, i.e. the parent of the
+  # dataset's data/ folder. Relative paths resolve against the working directory.
+  # null -> ./assets/surya-bench-ar-segmentation (where download_data.sh puts them).
+  ar_mask_root_path: null
   ar_index_train: ["./assets/surya-bench-ar-segmentation/train.csv"]
   ar_index_valid: ["./assets/surya-bench-ar-segmentation/validation.csv"]
   ar_index_test: ["./assets/surya-bench-ar-segmentation/test.csv"]
