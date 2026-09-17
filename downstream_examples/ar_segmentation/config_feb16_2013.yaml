@@ -1,15 +1,15 @@
 # Finetuning on a single day, validated on a single held-out day.
 #
-#   train:      2013-02-15  -- earliest 2013 date in the official train split
+#   train:      2013-02-16  -- from the official train split
 #   validation: 2013-01-15  -- from the official validation split
 #
 # The two days come from different official splits, so validation is genuinely held
-# out. 2013-02-15 is the first 2013 date present in both train_index_surya_1_0.csv and
-# the AR train.csv; the shipped train index has no January 2013 rows at all.
+# out. 2013-02-16 is present in both train_index_surya_1_0.csv and the AR train.csv;
+# the shipped train index has no January 2013 rows at all.
 #
 # Neither day is in the shipped *train* index as a complete unit usable on its own, so
 # this config uses generated single-day indices (see make_day_index.py). Each generated
-# SDO index matches the corresponding shipped index exactly: 119 files for 2013-02-15
+# SDO index matches the corresponding shipped index exactly: 119 files for 2013-02-16
 # against train_index_surya_1_0.csv, 116 for 2013-01-15 against valid_index_surya_1_0.csv.
 #
 # Both days yield 21 samples. SDO has a daily gap at 21:00, so 23 of 24 hourly masks
@@ -18,9 +18,8 @@
 #
 # Run with:
 #   torchrun --nnodes=1 --nproc_per_node=1 --standalone finetune.py \
-#       --config_path ./config_feb15_2013.yaml
-# job_id: large_scale
-job_id: AR-segmentation_feb15_2013
+#       --config_path ./config_feb16_2013.yaml
+job_id: AR-segmentation_feb16_2013
 data:
   # Use this to point at the paths of HelioFM data indices
   sdo_data_root_path: s3://nasa-surya-bench
@@ -35,9 +34,9 @@ data:
   s3_boto3_max_concurrency: 4
   s3_boto3_part_size_mb: 64
   # Single-day indices, regenerate with:
-  #   python make_day_index.py --date 2013-02-15   # train
+  #   python make_day_index.py --date 2013-02-16   # train
   #   python make_day_index.py --date 2013-01-15   # validation
-  train_data_path: ./assets/single_day/sdo_index_20130215.csv
+  train_data_path: ./assets/single_day/sdo_index_20130216.csv
   valid_data_path: ./assets/single_day/sdo_index_20130115.csv
   channels: ['aia94', 'aia131', 'aia171', 'aia193', 'aia211', 'aia304', 'aia335', 'aia1600', 'hmi_m', 'hmi_bx', 'hmi_by', 'hmi_bz', 'hmi_v']
   time_delta_input_minutes: [0]
@@ -52,10 +51,10 @@ data:
   # dataset's data/ folder. Relative paths resolve against the working directory.
   # null -> ./assets/surya-bench-ar-segmentation (where download_data.sh puts them).
   ar_mask_root_path: "/home/jovyan/scratch_space/AR_Seg_Uncertainty/data/masks"
-  # Masks: 2013-02-15 comes from the official train.csv, 2013-01-15 from validation.csv.
+  # Masks: 2013-02-16 comes from the official train.csv, 2013-01-15 from validation.csv.
   # Note a single validation day is 21 samples from one active-region configuration, so
   # treat the metric as a smoke signal rather than a estimate of real performance.
-  ar_index_train: ["./assets/single_day/ar_index_20130215.csv"]
+  ar_index_train: ["./assets/single_day/ar_index_20130216.csv"]
   ar_index_valid: ["./assets/single_day/ar_index_20130115.csv"]
 model:
   model_type: spectformer_lora # Options: unet, spectformer_lora,
@@ -114,7 +113,6 @@ adapter:
 
 optimizer:
   warm_up_steps: 0 #2000
-  #max_epochs: 10
   max_epochs: 10
   learning_rate: 0.001
   min_lr: 0.000001
@@ -128,8 +126,8 @@ wandb_log_train_after: 5 # This should be less than iters_per_epoch_train
 wandb_project: "helio-fm" # Typical choices: "helio-fm", "spectformer_with_metrics"
 visualization_samples: 3
 save_wt_after_iter: 100000
-path_experiment: checkpoints_feb15_2013
-iters_per_epoch_train: 21   # == trainable samples on 2013-02-15
+path_experiment: checkpoints_feb16_2013
+iters_per_epoch_train: 21   # == trainable samples on 2013-02-16
 iters_per_epoch_valid: 21   # == trainable samples on 2013-01-15
 iters_grad_accum: 1
 dtype: bfloat16
