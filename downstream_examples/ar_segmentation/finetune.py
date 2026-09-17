@@ -7,6 +7,10 @@ import torch
 import torch.distributed as dist
 import wandb
 
+# Preloaded so the lazy dask import in xarray's .load() path, which runs inside forked
+# DataLoader workers, doesn't trip wandb's telemetry import hook and raise ForkedError.
+import dask.base  # noqa: F401
+
 # Now try imports
 from dataset import ArDSDataset
 from torch.amp import GradScaler, autocast
