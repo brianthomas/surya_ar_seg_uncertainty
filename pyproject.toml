@@ -133,6 +133,9 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Repo root for workshop_infrastructure/ and downstream_examples.template;
+# the AR app dir because its modules are imported by plain name (see its app_paths.py).
+pythonpath = [".", "downstream_examples/ar_seg_cayoung_err"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
