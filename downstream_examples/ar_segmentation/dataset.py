@@ -14,6 +14,12 @@ from surya.datasets.helio import HelioNetCDFDataset
 # the working directory, so runs are expected to start from this example's folder.
 DEFAULT_AR_MASK_ROOT = "./assets/surya-bench-ar-segmentation"
 
+_MASK_SETUP_HINT = (
+    "Download the masks with ./download_data.sh (set AR_MASK_DIR to choose where they "
+    "land), then point data.ar_mask_root_path at that directory. Relative paths resolve "
+    "against the working directory, so run from this example's folder."
+)
+
 
 class ArDSDataset(HelioNetCDFDataset):
     def __init__(
@@ -57,9 +63,7 @@ class ArDSDataset(HelioNetCDFDataset):
         if not os.path.isdir(self.ar_mask_root_path):
             raise FileNotFoundError(
                 f"AR mask directory not found: {self.ar_mask_root_path}\n"
-                "Download it with ./download_data.sh (optionally setting AR_MASK_DIR to "
-                "choose where it lands), then point data.ar_mask_root_path at that "
-                "directory. Note the default is relative to the working directory."
+                f"{_MASK_SETUP_HINT}"
             )
 
         # Load ds index and find intersection with HelioFM index
@@ -91,6 +95,17 @@ class ArDSDataset(HelioNetCDFDataset):
         self.valid_indices = [pd.Timestamp(date) for date in self.ar_valid_indices["valid_indices"]]
         self.adjusted_length = len(self.valid_indices)
         self.ar_valid_indices.set_index("valid_indices", inplace=True)
+
+        if len(self.ar_valid_indices) > 0:
+            probe = os.path.join(
+                self.ar_mask_root_path, self.ar_valid_indices.iloc[0]["file_path"]
+            )
+            if not os.path.isfile(probe):
+                raise FileNotFoundError(
+                    f"AR mask directory {self.ar_mask_root_path} does not contain the "
+                    f"masks named by the index (looked for {probe}).\n"
+                    f"{_MASK_SETUP_HINT}"
+                )
 
     def __len__(self):
         return self.adjusted_length

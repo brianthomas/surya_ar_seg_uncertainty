@@ -6,7 +6,10 @@ REPO_ID="nasa-ibm-ai4science/surya-bench-ar-segmentation"
 REPO_TYPE="dataset"               # change to "model" if needed
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASSET_DIR="${SCRIPT_DIR}/assets"  # required to exist (per your spec)
-TARGET_DIR="${ASSET_DIR}/${REPO_ID#*/}"   # assets/Surya-bench-ar-segmentation
+# Where the AR mask dataset lands. Override to keep the ~large .h5 files off this
+# filesystem; point data.ar_mask_root_path in config.yaml at the same directory.
+#   AR_MASK_DIR=/scratch/ar_masks ./download_data.sh
+TARGET_DIR="${AR_MASK_DIR:-${ASSET_DIR}/${REPO_ID#*/}}"   # default: assets/surya-bench-ar-segmentation
 
 # Optional: use an existing token non-interactively
 HF_TOKEN="${HUGGINGFACE_HUB_TOKEN:-${HF_TOKEN:-}}"

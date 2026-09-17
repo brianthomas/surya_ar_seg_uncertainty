@@ -156,7 +156,7 @@ def generate_time_intervals(dirpath, start_year, start_month, end_year, end_mont
 
     return result
 
-def main(start_year, start_month, end_month, start_date=1, end_date=31):
+def main(start_year, start_month, end_month, start_date=1, end_date=31, mask_root=None):
     """
     Main entry point for AR CSV index generation.
     Generates a CSV file for the specified date range.
@@ -167,11 +167,16 @@ def main(start_year, start_month, end_month, start_date=1, end_date=31):
         end_month (int): End month (1-12, inclusive).
         start_date (int): Start date (1-31, inclusive). Default is 1.
         end_date (int): End date (1-31, inclusive). Default is 31.
+        mask_root (str | Path): Directory holding the downloaded AR mask files.
+            Defaults to assets/surya-bench-ar-segmentation next to this script;
+            pass the same directory as data.ar_mask_root_path if you moved them.
     """
     end_year = start_year
 
     cwd = Path(__file__).parent.resolve()
-    valid_extracted_path = cwd / "assets" / "surya-bench-ar-segmentation"
+    valid_extracted_path = (
+        Path(mask_root) if mask_root else cwd / "assets" / "surya-bench-ar-segmentation"
+    )
     
     # Create more descriptive filename based on date range
     if start_date == 1 and end_date == 31:

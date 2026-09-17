@@ -115,6 +115,28 @@ The output ![Sample output of Surya for 2014-01-07](../../assets/ar_seg_results.
 The dataset is hosted on Hugging Face: [nasa-ibm-ai4science/surya-bench-ar-segmentation](https://huggingface.co/datasets/nasa-ibm-ai4science/surya-bench-ar-segmentation)
 For more details on mask creation methodology, see [SuryaBench AR Segmentation](https://github.com/NASA-IMPACT/SuryaBench/tree/main/ar_segmentation).
 
+### Relocating the AR mask files
+
+The AR label masks (`.h5`) are read from `data.ar_mask_root_path`, which defaults to
+`./assets/surya-bench-ar-segmentation` -- where `download_data.sh` puts them. To keep
+them off this filesystem, download them elsewhere and point the config at the same
+directory:
+
+```bash
+AR_MASK_DIR=/scratch/ar_masks ./download_data.sh
+```
+
+```yaml
+data:
+  ar_mask_root_path: /scratch/ar_masks
+```
+
+The index CSVs (`ar_index_train` / `ar_index_valid`) are configured separately, so they
+can stay in `assets/` or move with the masks. The path is validated when the dataset is
+constructed, so a wrong directory fails immediately rather than part-way into training.
+If you moved the masks and also regenerate index CSVs, pass the same directory to
+`create_ar_csv.main(..., mask_root=...)`.
+
 ### Reading SDO input from S3
 
 `data.sdo_data_root_path` accepts an `s3://` URI as well as a local directory. The
