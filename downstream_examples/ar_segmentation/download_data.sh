@@ -19,7 +19,9 @@ ASSET_DIR="${SCRIPT_DIR}/assets"  # required to exist (per your spec)
 # Where the AR mask dataset lands. Override to keep the ~large .h5 files off this
 # filesystem; point data.ar_mask_root_path in config.yaml at the same directory.
 #   AR_MASK_DIR=/scratch/ar_masks ./download_data.sh
+AR_MASK_DIR=/home/jovyan/scratch_space/AR_Seg_Uncertainty/data/masks
 TARGET_DIR="${AR_MASK_DIR:-${ASSET_DIR}/${REPO_ID#*/}}"   # default: assets/surya-bench-ar-segmentation
+echo "target dir: ${TARGET_DIR}" 
 
 # Optional: use an existing token non-interactively
 HF_TOKEN="${HUGGINGFACE_HUB_TOKEN:-${HF_TOKEN:-}}"

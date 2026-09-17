@@ -27,7 +27,7 @@ data:
   # Directory holding the downloaded AR mask .h5 files, i.e. the parent of the
   # dataset's data/ folder. Relative paths resolve against the working directory.
   # null -> ./assets/surya-bench-ar-segmentation (where download_data.sh puts them).
-  ar_mask_root_path: null
+  ar_mask_root_path: "/home/jovyan/scratch_space/AR_Seg_Uncertainty/data/masks"
   ar_index_train: ["./assets/surya-bench-ar-segmentation/train.csv"]
   ar_index_valid: ["./assets/surya-bench-ar-segmentation/validation.csv"]
   ar_index_test: ["./assets/surya-bench-ar-segmentation/test.csv"]
@@ -65,7 +65,13 @@ model:
   lora_config:
     r: 32  # LoRA rank
     lora_alpha: 64  # LoRA alpha parameter
-    target_modules: ['q_proj', 'v_proj', 'k_proj', 'out_proj', 'fc1', 'fc2']  # Target modules for LoRA
+    #target_modules: ['q_proj', 'v_proj', 'k_proj', 'out_proj', 'fc1', 'fc2']  # Target modules for LoRA
+    # fc1/fc2 in all 10 blocks; attn.qkv/attn.proj in the 8 attention blocks.
+    # Dotted names are required: a bare "proj" would also match the Conv2d
+    # patch-embedding tokeniser. Never adapted: the spectral complex_weight,
+    # attn.to_dynamic_projection, and the patch embedding.
+    target_modules: [fc1, fc2, attn.qkv, attn.proj]
+
     lora_dropout: 0.1
     bias: 'none'
     # task_type: 'SEQ_CLS'
