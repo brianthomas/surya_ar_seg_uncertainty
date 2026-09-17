@@ -1,0 +1,120 @@
+# =============================================================================
+# Surya workshop — active-region (AR) segmentation config
+#
+# Same five sections as the template (data, model, training, output, logging). Paths are
+# relative to THIS FILE's directory. Unknown keys are an error: task-specific keys must
+# exist on ARDataConfig in ../configs.py first.
+#
+# Run both from the app directory (the one holding finetune_ar_segmentation.py).
+#
+# Baseline (14-parameter per-pixel logistic regression, runs on CPU):
+#   python finetune_ar_segmentation.py --train_baseline --no-wandb
+# Surya + LoRA:
+#   CUDA_VISIBLE_DEVICES=0 python finetune_ar_segmentation.py
+# =============================================================================
+
+job_id: ar_segmentation_baseline
+
+
+data:
+  # -- Surya index (decides the train / validation split) --
+  # ../data/indices is a symlink to the workshop repo's copy; see README.md.
+  train_data_path: ../data/indices/surya_aws_s3_train.csv
+  valid_data_path: ../data/indices/surya_aws_s3_val.csv
+  scalers_path: ../assets/scalers.yaml
+
+  # -- Input channels --
+  # For the "learned magnetogram threshold" baseline set this to [hmi_m] and
+  # model.in_channels to 1.
+  channels: [aia94, aia131, aia171, aia193, aia211, aia304, aia335, aia1600,
+             hmi_m, hmi_bx, hmi_by, hmi_bz, hmi_v]
+  time_delta_input_minutes: [0]
+  time_delta_target_minutes: 60   # unused: the label is a mask, not a future frame
+
+  # -- AR masks (nasa-ibm-ai4science/surya-bench-ar-segmentation; see download_masks.sh) --
+  # Also a symlink, to the already-downloaded 122k masks under scratch_space.
+  ar_mask_dir: ../data/surya-bench-ar-segmentation
+  ar_mask_splits: [train, validation, leaky_validation, test]
+  ar_mask_key: union_with_intersect   # or: intersection (the PILs themselves)
+  ar_pooling: 1                       # >1 only for the baseline on small machines
+  ar_pos_weight: null                 # e.g. 10 to up-weight the ~1.3% AR pixels
+  ar_threshold: 0.5                   # probability cut for IoU / Dice / precision / recall
+
+  # -- S3 (the indices above point at the public nasa-surya-bench bucket) --
+  s3_anon: true
+  s3_mode: download
+  # EFS scratch: effectively unlimited, unlike /home/jovyan (98 GB total). At ~590 MB
+  # per timestep, a few hundred samples will not fit on the home volume.
+  # Precedence is --s3-cache-dir > this value > $SURYA_WS_CACHE_DIR, so set this to
+  # null to pick the location up from the environment instead.
+  s3_cache_dir: /home/jovyan/scratch_space/cayoung/surya_s3_cache
+  s3_boto3_max_concurrency: 4
+  s3_boto3_part_size_mb: 64
+
+  # -- Development --
+  max_samples: 10
+
+
+model:
+  pretrained_path: ../assets/surya.366m.v1.pt
+
+  img_size: 4096
+  patch_size: 16
+  in_channels: 13
+  embed_dim: 1280
+  depth: 10
+  spectral_blocks: 2
+  num_heads: 16
+  mlp_ratio: 4.0
+  drop_rate: 0.0
+  window_size: 2
+  dp_rank: 4
+  rpe: false
+  learned_flow: false
+  init_weights: false
+  checkpoint_layers: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  ensemble: null
+  time_embedding:
+    type: linear
+    n_queries: null
+    time_dim: 1
+
+  # 2D head (HelioSpectformer2D): a linear un-embedding from 16x16 patches to 1 output
+  # channel of logits. The 1D pooling/dropout keys are accepted but unused here.
+  pooling: class_token
+  penultimate_linear_layer: true
+  dropout: 0.0
+  freeze_backbone: false
+
+  use_lora: true
+  lora_config:
+    r: 8
+    lora_alpha: 8
+    lora_dropout: 0.1
+    bias: none
+    target_modules: [fc1, fc2, attn.qkv, attn.proj]
+
+
+training:
+  learning_rate: 0.001    # fine for the 14-parameter baseline; use ~1e-4 for Surya
+  batch_size: 1           # one 13x4096x4096 stack is ~0.9 GB in float32
+  max_epochs: 5
+  num_workers: 2
+  seed: 42
+  deterministic: false
+  rollout_steps: 0
+  drop_hmi_probability: 0.0
+  use_latitude_in_learned_flow: false
+  dtype: float32
+
+
+output:
+  ckpt_dir: checkpoints/ar_segmentation
+  s3_bucket: null
+  s3_prefix: ""
+  s3_best_key: best.ckpt
+
+
+logging:
+  wandb_project: ar_segmentation
+  wandb_entity: null
