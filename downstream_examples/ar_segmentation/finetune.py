@@ -34,7 +34,7 @@ from surya.utils.distributed import (
     set_global_seed,
 )
 
-from models import HelioSpectformer2D, UNet, ChannelAdapter
+from segmentation_models import HelioSpectformer2D, UNet, ChannelAdapter
 from peft import LoraConfig, get_peft_model
 
 
@@ -302,18 +302,42 @@ def get_model(config, wandb_logger) -> torch.nn.Module:
     return model
 
 
+HEAD_PREFIX = "head_"
+
+
+def discover_head_modules(model: torch.nn.Module) -> list[str]:
+    """Names of the fine-tuning head modules that must stay trainable under LoRA.
+
+    Convention: every trainable head component is a direct child whose name
+    starts with ``head_``. These models subclass HelioSpectFormer rather than
+    wrapping it, so the backbone's own children (``embedding``, ``backbone``)
+    sit alongside the head; they are left out and stay frozen.
+
+    Parameter-free children are skipped so PEFT does not duplicate them.
+    """
+    return [
+        name
+        for name, module in model.named_children()
+        if name.startswith(HEAD_PREFIX) and any(True for _ in module.parameters())
+    ]
+
+
 # New function to apply PEFT LoRA to the model
 def apply_peft_lora(
     model: torch.nn.Module,
     config,
 ) -> torch.nn.Module:
     """
-    Applies PEFT LoRA to the HelioSpectformer1D model
+    Applies PEFT LoRA to the HelioSpectformer2D model.
+
+    Adapters go on ``target_modules``; every head module (see
+    discover_head_modules) is passed as ``modules_to_save`` so it stays
+    trainable. Without that the head is frozen at its random initialisation
+    and LoRA fits adapters to a random readout.
 
     Args:
-        model: The HelioSpectformer1D model to apply LoRA to.
+        model: The HelioSpectformer2D model to apply LoRA to.
         config: Configuration object containing LoRA settings.
-        logger: Standard python logging.Logger object.
 
     Returns:
         Model with PEFT LoRA adapters applied.
@@ -340,6 +364,15 @@ def apply_peft_lora(
 
     print0(f"Applying PEFT LoRA with configuration: {lora_config}")
 
+    modules_to_save = discover_head_modules(model)
+    if not modules_to_save:
+        raise ValueError(
+            "No fine-tuning head found to keep trainable under LoRA. Head "
+            f"modules must be direct children named with the {HEAD_PREFIX!r} "
+            "prefix (e.g. self.head_unembed); otherwise PEFT freezes them and "
+            "the model trains against a random readout."
+        )
+
     # Create LoRA configuration
     peft_config = LoraConfig(
         r=lora_config.get("r", 16),
@@ -349,10 +382,31 @@ def apply_peft_lora(
         ),
         lora_dropout=lora_config.get("lora_dropout", 0.1),
         bias=lora_config.get("bias", "none"),
+        modules_to_save=modules_to_save,
     )
 
     # Apply LoRA to the model
     model = get_peft_model(model, peft_config)
+
+    adapted = sorted(
+        {
+            name.split(".lora_A")[0].replace("base_model.model.", "")
+            for name, _ in model.named_parameters()
+            if ".lora_A" in name
+        }
+    )
+    print0(f"[LoRA] Adapted modules ({len(adapted)})")
+    print0(f"[LoRA] Trainable head modules (modules_to_save): {modules_to_save}")
+
+    # Defensive: current PEFT excludes modules_to_save from adapter injection.
+    # If that ever changes, a head module would get both, so fail loudly.
+    head_adapted = [n for n in adapted if n.split(".")[0].startswith(HEAD_PREFIX)]
+    if head_adapted:
+        raise RuntimeError(
+            "PEFT applied LoRA adapters to fine-tuning head modules, which "
+            f"should be fully trainable instead: {head_adapted}. "
+            "Narrow lora_config['target_modules'] so it cannot match head layers."
+        )
 
     if distributed.is_main_process():
 

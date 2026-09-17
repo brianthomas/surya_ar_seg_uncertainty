@@ -222,7 +222,7 @@ ar_segmentation/
 ├── infer.py                    # Inference script
 ├── run_inference_example.sh    # Inference example
 ├── dataset.py                  # Dataset class implementation
-├── models.py                   # Model definitions
+├── segmentation_models.py      # Model definitions
 └── assets/                     # Data indices and downloaded data
 ```
 

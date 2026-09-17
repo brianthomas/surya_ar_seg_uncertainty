@@ -11,14 +11,13 @@ from tqdm import tqdm
 from huggingface_hub import snapshot_download
 
 # Import from the same directory
-from models import HelioSpectformer2D, UNet
-from peft import LoraConfig, get_peft_model
+from segmentation_models import HelioSpectformer2D, UNet
 
 # Import from surya
 from surya.utils.data import build_scalers
 from surya.utils.distributed import set_global_seed
 from surya.datasets.helio import HelioNetCDFDataset
-from finetune import custom_collate_fn
+from finetune import apply_peft_lora, custom_collate_fn
 
 
 def get_model(config) -> torch.nn.Module:
@@ -65,38 +64,43 @@ def get_model(config) -> torch.nn.Module:
     return model
 
 
-def apply_peft_lora(model: torch.nn.Module, config) -> torch.nn.Module:
-    """
-    Apply PEFT LoRA to the model
-    """
-    if not "lora_config" in config["model"]:
-        print("No LoRA configuration found. Using default LoRA settings.")
-        lora_config = {
-            "r": 32,
-            "lora_alpha": 64,
-            "target_modules": ["q_proj", "v_proj", "k_proj", "out_proj", "fc1", "fc2"],
-            "lora_dropout": 0.1,
-            "bias": "none",
-        }
-    else:
-        lora_config = config["model"]["lora_config"]
+LEGACY_HEAD_PREFIX = "base_model.model.unembed."
 
-    print(f"Applying PEFT LoRA with configuration: {lora_config}")
 
-    # Create LoRA configuration
-    peft_config = LoraConfig(
-        r=lora_config.get("r", 16),
-        lora_alpha=lora_config.get("lora_alpha", 32),
-        target_modules=lora_config.get(
-            "target_modules", ["q_proj", "v_proj", "k_proj", "out_proj", "fc1", "fc2"]
-        ),
-        lora_dropout=lora_config.get("lora_dropout", 0.1),
-        bias=lora_config.get("bias", "none"),
+def remap_legacy_head_keys(model_state, model):
+    """Rename head weights saved before the ``head_`` LoRA fix.
+
+    Checkpoints released prior to that fix stored the head as a plain frozen
+    module under ``unembed``. The head is now ``head_unembed`` and PEFT wraps
+    it, so the same tensor is expected at both the ``original_module`` and
+    ``modules_to_save.default`` paths. Copy it into both to keep those
+    checkpoints loadable with strict=True.
+
+    Note the head in such checkpoints never trained -- it is the random
+    initialisation LoRA was fitted against.
+    """
+    if not any(k.startswith(LEGACY_HEAD_PREFIX) for k in model_state):
+        return model_state
+
+    expected = set(model.state_dict().keys())
+    remapped = {k: v for k, v in model_state.items() if not k.startswith(LEGACY_HEAD_PREFIX)}
+    for key, value in model_state.items():
+        if not key.startswith(LEGACY_HEAD_PREFIX):
+            continue
+        suffix = key[len(LEGACY_HEAD_PREFIX):]
+        targets = [
+            f"base_model.model.head_unembed.original_module.{suffix}",
+            f"base_model.model.head_unembed.modules_to_save.default.{suffix}",
+        ]
+        for target in targets:
+            if target in expected:
+                remapped[target] = value
+
+    print(
+        "Detected a pre-head_ checkpoint; remapped its 'unembed' head onto "
+        "'head_unembed'. That head was frozen during training."
     )
-
-    # Apply LoRA to the model
-    model = get_peft_model(model, peft_config)
-    return model
+    return remapped
 
 
 def load_model(config, checkpoint_path, device):
@@ -126,7 +130,9 @@ def load_model(config, checkpoint_path, device):
     # Remove 'module.' prefix if present (from DistributedDataParallel)
     if any(key.startswith('module.') for key in model_state.keys()):
         model_state = {key.replace('module.', ''): value for key, value in model_state.items()}
-    
+
+    model_state = remap_legacy_head_keys(model_state, model)
+
     # Load state dict
     try:
         model.load_state_dict(model_state, strict=True)

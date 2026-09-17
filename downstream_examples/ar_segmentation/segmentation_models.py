@@ -175,6 +175,13 @@ class HelioSpectformer1D(HelioSpectFormer):
 
 
 class HelioSpectformer2D(HelioSpectFormer):
+    """Surya backbone with a 2D segmentation head.
+
+    Head components are named with a ``head_`` prefix so apply_peft_lora() can
+    find them and keep them trainable via PEFT's ``modules_to_save``; without
+    that the head stays frozen at its random initialisation under LoRA.
+    """
+
     def __init__(
         self,
         img_size: int,
@@ -223,13 +230,13 @@ class HelioSpectformer2D(HelioSpectFormer):
 
         match config["model"]["ft_unembedding_type"]:
             case "linear":
-                self.unembed = LinearDecoder(
+                self.head_unembed = LinearDecoder(
                     patch_size=patch_size,
                     out_chans=config["model"]["ft_out_chans"],
                     embed_dim=embed_dim,
                 )
             case "perceiver":
-                self.unembed = PerceiverDecoder(
+                self.head_unembed = PerceiverDecoder(
                     embed_dim=embed_dim,
                     patch_size=patch_size,
                     out_chans=config["model"]["ft_out_chans"],
@@ -247,7 +254,7 @@ class HelioSpectformer2D(HelioSpectFormer):
 
         # Unembed the tokens
         # BE L D -> BE C H W
-        forecast_hat = self.unembed(tokens)
+        forecast_hat = self.head_unembed(tokens)
         # forecast_hat = self.sigmoid(forecast_hat)
 
         return forecast_hat
