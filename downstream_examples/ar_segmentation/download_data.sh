@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+
+# Must come before `set -o pipefail`, which is a bashism: under `sh download_data.sh` this
+# file is run by /bin/sh (dash on many images) and line 2 would otherwise fail with
+# the cryptic "Illegal option -o pipefail".
+if [ -z "${BASH_VERSION:-}" ]; then
+  echo "ERROR: this script requires bash, but is running under $(ps -p $$ -o comm= 2>/dev/null || echo sh)." >&2
+  echo "Run it as:  bash $0" >&2
+  exit 1
+fi
+
 set -euo pipefail
 
 # ---- Config ----
