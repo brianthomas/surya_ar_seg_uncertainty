@@ -68,9 +68,9 @@ Two things beyond `download_data.sh` are needed (see `README.md` for full detail
 1. The masks tarball must be unpacked (see above) — `dataset.py`'s `ArDSDataset` reads each mask
    from `./assets/surya-bench-ar-segmentation/<file_path>` relative to the CWD the script runs
    from.
-2. `config.yaml`'s `data.sdo_data_root_path` still points at the original authors' cluster path
-   (`/nobackupnfs1/sroy14/processed_data/Helio/nc`) — point it at a local NetCDF root (see
-   `downstream_examples/download_sample_train_data.py`) and make sure
+2. `config.yaml`'s `data.sdo_data_root_path` now defaults to the public `s3://nasa-surya-bench`
+   bucket (see `downstream_examples/ar_segmentation/README.md` for the S3 read path). To use a
+   local NetCDF root instead (see `downstream_examples/download_sample_train_data.py`), make sure
    `assets/train_index_surya_1_0.csv` paths line up with it.
 
 ## Architecture

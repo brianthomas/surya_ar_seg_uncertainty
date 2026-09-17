@@ -78,11 +78,12 @@ Two things are still needed before `finetune.py` can run:
    `dataset.py` reads each mask from `./assets/surya-bench-ar-segmentation/<file_path>`
    (e.g. `data/2010/05/20100513_0100.h5`); only the index CSVs were copied into this project.
 
-2. **SDO NetCDF corpus.** `config.yaml`'s `sdo_data_root_path` still points at
-   `/nobackupnfs1/sroy14/processed_data/Helio/nc`, a path from the original authors'
-   cluster. Point it at a local NetCDF root (see
-   `downstream_examples/download_sample_train_data.py`) and make sure
-   `assets/train_index_surya_1_0.csv` paths line up with it.
+2. **SDO NetCDF corpus.** `config.yaml`'s `sdo_data_root_path` now points at the public
+   `s3://nasa-surya-bench` bucket by default (see
+   `downstream_examples/ar_segmentation/README.md` for the S3 read path and how to switch
+   to a local NetCDF root instead, e.g. via
+   `downstream_examples/download_sample_train_data.py`). If you do switch to a local root,
+   make sure `assets/train_index_surya_1_0.csv` paths line up with it.
 
 `config.yaml` also lists `ar_index_test: ./assets/surya-bench-ar-segmentation/test.csv`,
 which the HF dataset snapshot doesn't include — harmless, since `finetune.py` only reads
