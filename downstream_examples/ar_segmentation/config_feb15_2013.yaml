@@ -79,7 +79,7 @@ model:
   learned_flow: false
   epochs_to_learn_flow: 0 # Start by training flow model only before freezing
   init_weights: false
-  checkpoint_layers: []
+  checkpoint_layers: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  # depth: 10 -- checkpoint every block to cut activation memory
   ensemble: null # Set to integer or null
   unet_embed_dim: 128 # For unet
   unet_blocks: 3 # For unet
