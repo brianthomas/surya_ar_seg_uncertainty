@@ -1,0 +1,6 @@
+pipeline:
+
+* train models w/ finetune
+* use each model in infer_file to get inference results on file by file basis using knockout set of AR regions
+* use average to collect results on channel by channel basis to create average mask maps
+* use false_color to create color maps   

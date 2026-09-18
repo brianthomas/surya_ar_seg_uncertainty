@@ -101,7 +101,7 @@ num_mask_aia_channels: 0
 drop_hmi_probablity: 0.0
 validate_after_epoch: 1
 wandb_log_train_after: 5 # This should be less than iters_per_epoch_train
-wandb_project: "helio-fm" # Typical choices: "helio-fm", "spectformer_with_metrics"
+wandb_project: "surya-ws2" # Typical choices: "helio-fm", "spectformer_with_metrics"
 visualization_samples: 3
 save_wt_after_iter: 100000
 path_experiment: checkpoints
