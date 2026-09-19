@@ -80,7 +80,7 @@ snapshot_download(repo_id, repo_type=repo_type, local_dir=local_dir,
 snapshot_download(repo_id="nasa-ibm-ai4science/core-sdo", repo_type=repo_type, local_dir=r"${ASSET_DIR}",
                   token=None, allow_patterns=["*_index_surya_1_0.csv", "infer_data/*", "scalers.yaml"])
 snapshot_download(repo_id="nasa-ibm-ai4science/Surya-1.0", local_dir=r"${ASSET_DIR}",
-                  token=None,allow_patterns=["surya.366m.v1.pt"],
+                  token=None, allow_patterns=["surya.366m.v1.pt"])
 
 print("Download complete:", local_dir)
 PY
