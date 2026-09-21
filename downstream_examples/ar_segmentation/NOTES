@@ -4,3 +4,25 @@ pipeline:
 * use each model in infer_file to get inference results on file by file basis using knockout set of AR regions
 * use average to collect results on channel by channel basis to create average mask maps
 * use false_color to create color maps   
+
+Training Data
+
+How the 4 CSVs relate and differ:
+
+assets/train_index_surya_1_0.csv — a different dataset entirely. This is the foundation-model (Surya-1.0) input index, not an AR-segmentation label file:
+
+    Columns: ,path,timestep,present — 345,721 rows at 12-minute cadence, 2011-02-15 to 2019-12-31.
+    path points to raw SDO NetCDF files (.nc, e.g. 2011/02/20110215_0000.nc) holding the AIA/HMI channels the model consumes as input.
+    present (0/1) just flags whether a valid observation exists at that timestep (309,412 present, 36,309 missing).
+    Used as data.train_data_path in config.yaml, feeding Surya's own pretraining/embedding pipeline — it has nothing to do with AR masks. (Its sibling valid_index_surya_1_0.csv, not in your list, plays the matching validation role.)
+
+The three surya-bench-ar-segmentation/*.csv files are the downstream AR-segmentation benchmark's label catalogue, all sharing the schema timestamp, file_path, present, hourly cadence, file_path pointing to .h5 mask files (each containing intersection = PIL map and union_with_intersect = the AR footprint mask, the default training target). Together with a test.csv (not in your list), they form a fixed temporal split over 2010–2019 (test covers 2020–2024) documented in GROUND_TRUTH_EXPLAINED.md:
+file 	date coverage 	rows 	present=1
+train.csv 	15 Feb – 31 Dec, each year 2010–2019 	74,760 	70,823
+validation.csv 	15–31 Jan, each year 2010–2019 	3,672 	3,477
+leaky_validation.csv 	1–14 Jan and 1–14 Feb, each year 2010–2019 	6,048 	5,753
+
+These are wired into config.yaml as ar_index_train / ar_index_valid (test.csv likewise, though it isn't shipped locally).
+
+Why leaky_validation.csv is separate and called "leaky": it covers the calendar days immediately adjacent to train.csv's start (Feb 15) and wrapping around validation.csv's window (Jan 15–31) — i.e., Jan 1–14 and Feb 1–14. Although no individual timestamp is duplicated across files (verified — zero overlap), active regions rotate and evolve on multi-day timescales, so samples this close to the training window's boundary are temporally correlated with training data, making it an easier/"leaky" validation set rather than a clean held-out one. validation.csv (mid/late January) is the non-leaky held-out split actually used for model selection.
+
