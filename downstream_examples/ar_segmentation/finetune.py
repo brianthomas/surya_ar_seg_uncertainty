@@ -129,17 +129,23 @@ def custom_collate_fn(batch):
     return collated_data, collated_metadata
 
 
-def evaluate_model(dataloader, epoch, model, device, run, criterion):
+def evaluate_model(dataloader, epoch, model, device, run, criterion, step, threshold=0.5):
+    """Validate a binary segmentation model.
+
+    Pixels are classified by thresholding sigmoid(logits) at ``threshold``, and
+    IoU/Dice/precision/recall are computed from TP/FP/FN/TN counted over every
+    pixel of every sample (micro-averaged), so empty masks don't produce NaNs.
+    Metrics are logged to wandb at ``step`` (the global training step), since
+    wandb drops data logged at a step lower than one it has already seen.
+    """
     model.eval()
 
-    # Initialize accumulators
-    # Accumulators (tensors so they can be reduced across ranks)
-    abs_err_sum = torch.tensor(0.0, device=device)
-    sq_err_sum = torch.tensor(0.0, device=device)
-    targ_sum = torch.tensor(0.0, device=device)
-    targ_sq_sum = torch.tensor(0.0, device=device)
-    total_n = torch.tensor(0.0, device=device)
-    total, correct = 0, 0
+    # Confusion counts (float64 tensors so they can be reduced across ranks
+    # without overflowing: one 4096x4096 sample alone is 16.7M pixels)
+    tp = torch.tensor(0.0, device=device, dtype=torch.float64)
+    fp = torch.tensor(0.0, device=device, dtype=torch.float64)
+    fn = torch.tensor(0.0, device=device, dtype=torch.float64)
+    tn = torch.tensor(0.0, device=device, dtype=torch.float64)
     running_loss, num_batches = 0.0, 0
     # Inference loop
     with torch.no_grad():
@@ -162,50 +168,57 @@ def evaluate_model(dataloader, epoch, model, device, run, criterion):
 
             if i % config["wandb_log_train_after"] == 0 and distributed.is_main_process():
                 print0(f"Epoch: {epoch}, batch: {i}, loss: {reduced_loss.item()}")
-                # print0(f"Batch {i}, Loss: {reduced_loss.item()}")
-                log(run, {"val_loss": reduced_loss.item()}, step=epoch)
 
-            diff = outputs - target
-            abs_err_sum += torch.abs(diff).sum()
-            sq_err_sum += (diff**2).sum()
-            targ_sum += target.sum()
-            targ_sq_sum += (target**2).sum()
-            total_n += torch.tensor(target.numel(), device=device)
+            pred = torch.sigmoid(outputs.float()) > threshold
+            true = target > 0.5
+            tp += (pred & true).sum()
+            fp += (pred & ~true).sum()
+            fn += (~pred & true).sum()
+            tn += (~pred & ~true).sum()
 
-    # Aggregate metrics across all ranks
-    for t in [abs_err_sum, sq_err_sum, targ_sum, targ_sq_sum, total_n]:
+    # Aggregate counts across all ranks
+    for t in [tp, fp, fn, tn]:
         dist.all_reduce(t, op=dist.ReduceOp.SUM)
+    tp, fp, fn, tn = tp.item(), fp.item(), fn.item(), tn.item()
+    total_n = tp + fp + fn + tn
 
-    mae = abs_err_sum.item() / total_n.item()
-    mse = sq_err_sum.item() / total_n.item()
-    rmse = mse**0.5
+    def ratio(num, den):
+        return float("nan") if den == 0 else num / den
 
-    # R² calculation: 1 - SSE/SST
-    var_y = (targ_sq_sum.item() - (targ_sum.item() ** 2) / total_n.item()) / total_n.item()
-    r2 = float("nan") if var_y == 0 else 1.0 - (mse / var_y)
+    iou = ratio(tp, tp + fp + fn)
+    dice = ratio(2 * tp, 2 * tp + fp + fn)
+    precision = ratio(tp, tp + fp)
+    recall = ratio(tp, tp + fn)
+    accuracy = ratio(tp + tn, total_n)
+    pos_frac_true = ratio(tp + fn, total_n)
+    pos_frac_pred = ratio(tp + fp, total_n)
 
-    # Compute final metrics
     avg_loss = running_loss / max(num_batches, 1)
 
-    # Print and log
+    metrics = {
+        "valid/loss": avg_loss,
+        "valid/iou": iou,
+        "valid/dice": dice,
+        "valid/precision": precision,
+        "valid/recall": recall,
+        "valid/pixel_accuracy": accuracy,
+        "valid/pos_frac_true": pos_frac_true,
+        "valid/pos_frac_pred": pos_frac_pred,
+        "valid/pixels": int(total_n),
+        "epoch": epoch,
+    }
+
     if distributed.is_main_process():
         print0(
-            f"Validation — MAE: {mae:.4f}  RMSE: {rmse:.4f}  R2: {r2:.4f}  "
-            f"Avg Loss: {avg_loss:.4f}  Samples: {int(total_n.item())}"
+            f"Validation — IoU: {iou:.4f}  Dice: {dice:.4f}  "
+            f"Precision: {precision:.4f}  Recall: {recall:.4f}  "
+            f"Pixel acc: {accuracy:.4f}  AR fraction (true/pred): "
+            f"{pos_frac_true:.4f}/{pos_frac_pred:.4f}  "
+            f"Avg Loss: {avg_loss:.4f}  Pixels: {int(total_n)}"
         )
-        log(
-            run,
-            {
-                "valid/mae": mae,
-                "valid/rmse": rmse,
-                "valid/r2": r2,
-                "valid/loss": avg_loss,
-                "valid/total": int(total_n.item()),
-            },
-            step=epoch,
-        )
+        log(run, metrics, step=step)
 
-    return mae, rmse, r2, avg_loss
+    return metrics
 
 
 def wrap_all_checkpoints(model):
@@ -542,10 +555,10 @@ def main(config, use_gpu: bool, use_wandb: bool, profile: bool):
 
         run = wandb.init(
             project=config["wandb_project"],
-            entity="nasa-impact",
+            entity=config.get("wandb_entity", "nasa-impact"),
             name=f'[JOB: {job_id}] AR {config["job_id"]}',
             config=config,
-            mode="offline",
+            mode=config.get("wandb_mode", "offline"),
         )
         wandb.save(args.config_path)
 
@@ -633,15 +646,20 @@ def main(config, use_gpu: bool, use_wandb: bool, profile: bool):
         dist.all_reduce(running_batch, op=dist.ReduceOp.SUM)
 
         if distributed.is_main_process():
-            log(run, {"epoch_loss": running_loss.item() / running_batch.item()}, step=epoch)
-            log(run, {"step": total_steps}, step=epoch)
+            # Log at total_steps, not epoch: train_loss already advanced wandb's step
+            # counter, and wandb silently drops anything logged at an earlier step.
+            log(
+                run,
+                {"epoch_loss": running_loss.item() / running_batch.item(), "epoch": epoch},
+                step=total_steps,
+            )
 
 
         fp = os.path.join(config["path_experiment"], f"epoch_{epoch}.pth")
         save_model_singular(model, fp, parallelism=config["parallelism"])
         print0(f"Epoch {epoch}: Model saved at {fp}")
 
-        evaluate_model(valid_loader, epoch, model, rank, run, criterion)
+        evaluate_model(valid_loader, epoch, model, rank, run, criterion, step=total_steps)
 
 
 if __name__ == "__main__":
