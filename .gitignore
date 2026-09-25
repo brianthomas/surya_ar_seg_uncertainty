@@ -213,6 +213,7 @@ data/
 runs/
 downstream_examples/common_data/
 downstream_examples/*/checkpoints/
+downstream_examples/*/checkpoints
 downstream_examples/*/assets/
 downstream_examples/*/assets
 # Local credential file — never commit (contains a GitHub PAT)
