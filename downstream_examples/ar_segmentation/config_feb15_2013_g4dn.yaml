@@ -1,0 +1,156 @@
+# g4dn variant of config_feb15_2013.yaml: a single-epoch run on one Tesla T4 (16 GB,
+# sm_75), 8 vCPUs, 32 GB RAM. Differences from the original:
+#   - max_epochs 1
+#   - dtype float16: the T4 has no native bfloat16. finetune.py already wraps the step
+#     in a GradScaler, and the spectral blocks upcast to float32 for the FFT.
+#   - checkpoint_layers covers all 10 blocks, trading recompute for memory on 16 GB
+#   - num_data_workers 2 / prefetch_factor 1: each sample is ~0.9 GB of float32
+#     (13 x 4096 x 4096), so 8 workers x 2 prefetch would exhaust 32 GB of RAM
+#   - ar_mask_root_path null (./assets/surya-bench-ar-segmentation); the /home/jovyan
+#     path from the original machine does not exist here
+#   - separate job_id / path_experiment so the original run's checkpoints are untouched
+#
+# Finetuning on a single day, validated on a single held-out day.
+#
+#   train:      2013-02-15  -- earliest 2013 date in the official train split
+#   validation: 2013-01-15  -- from the official validation split
+#
+# The two days come from different official splits, so validation is genuinely held
+# out. 2013-02-15 is the first 2013 date present in both train_index_surya_1_0.csv and
+# the AR train.csv; the shipped train index has no January 2013 rows at all.
+#
+# Neither day is in the shipped *train* index as a complete unit usable on its own, so
+# this config uses generated single-day indices (see make_day_index.py). Each generated
+# SDO index matches the corresponding shipped index exactly: 119 files for 2013-02-15
+# against train_index_surya_1_0.csv, 116 for 2013-01-15 against valid_index_surya_1_0.csv.
+#
+# Both days yield 21 samples. SDO has a daily gap at 21:00, so 23 of 24 hourly masks
+# survive, and the +60 min target requirement then drops 20:00 (target 21:00 missing)
+# and 23:00 (target falls on the next day).
+#
+# Run with:
+#   torchrun --nnodes=1 --nproc_per_node=1 --standalone finetune.py \
+#       --config_path ./config_feb15_2013_g4dn.yaml
+# job_id: large_scale
+job_id: AR-segmentation_feb15_2013_g4dn_1epoch
+data:
+  # Use this to point at the paths of HelioFM data indices
+  sdo_data_root_path: s3://nasa-surya-bench
+  # --- S3 (only used when sdo_data_root_path is an s3:// URI) ---
+  # nasa-surya-bench is public. Left false, the ambient AWS credentials are used to
+  # sign the request and the bucket rejects it with 403.
+  s3_anon: true
+  # Where objects are staged before reading. Each is deleted immediately after use,
+  # so peak usage is num_data_workers x world_size x ~0.6 GB, not the dataset size.
+  # null -> $SURYA_S3_SCRATCH, $SCRATCH, $TMPDIR, then the system temp dir.
+  s3_scratch_dir: null
+  s3_boto3_max_concurrency: 4
+  s3_boto3_part_size_mb: 64
+  # Single-day indices, regenerate with:
+  #   python make_day_index.py --date 2013-02-15   # train
+  #   python make_day_index.py --date 2013-01-15   # validation
+  train_data_path: ./assets/single_day/sdo_index_20130215.csv
+  valid_data_path: ./assets/single_day/sdo_index_20130115.csv
+  channels: ['aia94', 'aia131', 'aia171', 'aia193', 'aia211', 'aia304', 'aia335', 'aia1600', 'hmi_m', 'hmi_bx', 'hmi_by', 'hmi_bz', 'hmi_v']
+  time_delta_input_minutes: [0]
+  time_delta_target_minutes: +60
+  # n_input_timestamps: 1 #Optional integer to randomly sample time_delta_input_minutes
+  batch_size: 1
+  num_data_workers: 2
+  prefetch_factor: 1
+  scalers_path: ./assets/scalers.yaml
+  #### Put your donwnstream (DS) specific parameters below this line
+  # Directory holding the downloaded AR mask .h5 files, i.e. the parent of the
+  # dataset's data/ folder. Relative paths resolve against the working directory.
+  # null -> ./assets/surya-bench-ar-segmentation (where download_data.sh puts them).
+  ar_mask_root_path: null
+  # Masks: 2013-02-15 comes from the official train.csv, 2013-01-15 from validation.csv.
+  # Note a single validation day is 21 samples from one active-region configuration, so
+  # treat the metric as a smoke signal rather than a estimate of real performance.
+  ar_index_train: ["./assets/single_day/ar_index_20130215.csv"]
+  ar_index_valid: ["./assets/single_day/ar_index_20130115.csv"]
+model:
+  model_type: spectformer_lora # Options: unet, spectformer_lora,
+  # Spectformer options
+  img_size: 4096
+  patch_size: 16
+  in_channels: 13
+  time_embedding:
+    type: linear           # Options: linear, perceiver
+    n_queries: null        # Integer for perceiver; otherwise null
+    time_dim: 1            # Integer
+  embed_dim: 1280
+  depth: 10
+  spectral_blocks: 2
+  num_heads: 16
+  mlp_ratio: 4.0
+  rpe: false
+  drop_rate: 0.0
+  window_size: 2
+  dp_rank: 4
+  learned_flow: false
+  epochs_to_learn_flow: 0 # Start by training flow model only before freezing
+  init_weights: false
+  checkpoint_layers: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  # all 10 blocks, to fit in the T4's 16 GB
+  ensemble: null # Set to integer or null
+  unet_embed_dim: 128 # For unet
+  unet_blocks: 3 # For unet
+  finetune: True
+  # Finetuning config fields
+  ft_unembedding_type: "linear" # "linear" or "perceiver"
+  ft_out_chans: 1
+  use_lora: true
+  lora_config:
+    r: 4  # LoRA rank
+    lora_alpha: 8  # LoRA alpha parameter
+    # attn.qkv/attn.proj in the 8 attention blocks only. fc1/fc2 are left out to fit
+    # the T4: PEFT casts each MLP activation to fp32 for the LoRA branch, and the
+    # fc2 input alone is 1.25 GiB, which OOMs the first backward pass by ~1 GiB.
+    # q_proj/v_proj/k_proj/out_proj don't exist in this architecture, so those
+    # entries matched nothing and LoRA silently skipped attention entirely.
+    target_modules: [attn.qkv, attn.proj]  # Target modules for LoRA
+    lora_dropout: 0.1
+    bias: 'none'
+    # task_type: 'SEQ_CLS'
+
+  # metrics for AR segmentation
+  select: "bce"
+  dice:
+    smooth: 1e-5
+  iou:
+    eps: 1e-6
+  bce:
+    pos_weight: 1
+
+adapter:
+  use_channel_adapter: False
+  channels: ['aia94', 'aia131', 'aia171']
+
+optimizer:
+  warm_up_steps: 0 #2000
+  max_epochs: 1
+  learning_rate: 0.001
+  min_lr: 0.000001
+use_latitude_in_learned_flow: false
+loss_weights: [] # [] or list of weights per channel
+rollout_steps: 0
+num_mask_aia_channels: 0
+drop_hmi_probablity: 0.0
+validate_after_epoch: 1
+wandb_log_train_after: 5 # This should be less than iters_per_epoch_train
+wandb_entity: "brian-a-thomas"
+wandb_project: "surya-ar-segmentation-testing"
+# online needs `wandb login` (or WANDB_API_KEY); offline runs can be pushed later with `wandb sync`
+wandb_mode: "online"
+visualization_samples: 3
+save_wt_after_iter: 100000
+path_experiment: checkpoints_feb15_2013_g4dn
+iters_per_epoch_train: 21   # == trainable samples on 2013-02-15
+iters_per_epoch_valid: 21   # == trainable samples on 2013-01-15
+iters_grad_accum: 1
+dtype: float16  # T4 (sm_75) has no native bfloat16
+parallelism: "ddp" # Valid options: "ddp" and "fsdp"
+
+# Finetuning config fields
+pretrained_path: ./assets/surya.366m.v1.pt
+freeze_backbone: False
