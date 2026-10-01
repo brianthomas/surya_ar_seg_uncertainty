@@ -56,8 +56,13 @@ Everything else (`scalers.yaml`, `train/valid_index_surya_1_0.csv`,
 
 ```bash
 cd ~/Code/surya_ar_uncertainty
-uv sync
-source .venv/bin/activate          # the tutorial notebook's kernel is named ".venv"
+# create conda environment
+mamba create env -f environment.yml
+# activate new environment
+conda activate surya_ar_seg_uncertainty 
+# Install all repository dependencies directly into Conda, DO this AFTER building conda env in environment.yml 
+pip install -e .
+
 python -m pytest -s -o log_cli=true tests/test_surya.py   # optional sanity check
 ```
 
