@@ -24,7 +24,7 @@ ensemble as-is:
   2. path_experiment is one global "checkpoints" dir, and finetune.py:657-659 writes
      epoch_{epoch}.pth there unconditionally every epoch -- all 10 runs would overwrite each
      other, and 15 epochs x 10 members at ~1.8 GB is ~250 GB against 26 GB free on /home/jovyan.
-     Moved to a per-member directory under --experiment-root (default on /efs).
+     Moved to a per-member directory under --experiment-root (default on /mnt/efs).
   3. iters_per_epoch_train is 2000 against a 168-sample epoch. Harmless (finetune.py:610 uses it
      only as a break cap) but it makes the logs misleading, so it is set to the replicate size.
 
@@ -103,7 +103,7 @@ def main() -> None:
                         "directory, not in --out-dir: finetune.py and every asset path in the "
                         "configs resolve against the working directory, and the runner cds to "
                         "its own location.")
-    p.add_argument("--experiment-root", default="/efs/bathomas/ar_seg_bootstrap",
+    p.add_argument("--experiment-root", default="/mnt/efs/bathomas/ar_seg_bootstrap",
                    help="Parent of the per-member checkpoint directories. Keep this off "
                         "/home/jovyan, which has ~26 GB free against ~250 GB of checkpoints.")
     p.add_argument("--valid-index", default="./assets/subsamples/ar_index_validation_1day.csv",
