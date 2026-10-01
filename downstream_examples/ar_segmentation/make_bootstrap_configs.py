@@ -82,7 +82,7 @@ echo "All {total} members complete."
 RUN_LINE = """\
 echo "=== member {rep}/{total}: {config} ==="
 torchrun --nnodes=1 --nproc_per_node=1 --standalone finetune.py \\
-    --gpu --config_path ./{config}
+    --gpu{wandb} --config_path ./{config}
 """
 
 
@@ -106,18 +106,46 @@ def main() -> None:
     p.add_argument("--experiment-root", default="/efs/bathomas/ar_seg_bootstrap",
                    help="Parent of the per-member checkpoint directories. Keep this off "
                         "/home/jovyan, which has ~26 GB free against ~250 GB of checkpoints.")
-    p.add_argument("--valid-index", default="./assets/subsamples/ar_index_validation_1day.csv",
-                   help="Fixed validation index, identical for every member.")
-    p.add_argument("--test-index", default="./assets/subsamples/ar_index_leaky_validation_1day.csv",
-                   help="Fixed leaky-validation index, identical for every member. NOTE: "
-                        "finetune.py never reads ar_index_test -- it is carried for post-hoc "
-                        "evaluation with infer.py.")
+    p.add_argument("--valid-index", default="./assets/surya-bench-ar-segmentation/validation.csv",
+                   help="Fixed validation index, identical for every member. The full split is "
+                        "the default deliberately: iters_per_epoch_valid caps evaluation at 200 "
+                        "batches either way, so a smaller index costs the same while covering "
+                        "far less -- ar_index_validation_1day.csv spans only Jan 15 of each year "
+                        "(9 days) against 153 days here. Per-member metric noise feeds straight "
+                        "into the ensemble spread, so broader coverage is worth having free.")
+    p.add_argument("--test-index", default="./assets/surya-bench-ar-segmentation/leaky_validation.csv",
+                   help="Fixed leaky-validation index, identical for every member. The full split "
+                        "is the default for the same reason as --valid-index: the 1day subsample "
+                        "covers only Jan 1 and Feb 1 of each year (18 days) against 252 days "
+                        "here. NOTE: finetune.py never reads ar_index_test -- it is carried for "
+                        "post-hoc evaluation -- and nothing shipped indexes its Jan 1-14 / "
+                        "Feb 1-14 SDO inputs, so it yields 0 samples until that index is built "
+                        "from S3 (make_month_start_subsets.py --with-sdo-index).")
     p.add_argument("--ar-mask-root", default="./assets/surya-bench-ar-segmentation",
                    help="Directory holding the mask .h5 tree.")
     p.add_argument("--s3-scratch-dir", default="/tmp/surya_s3_scratch",
                    help="Staging dir for SDO objects. Needs ~5 GB (8 workers x ~590 MB).")
-    p.add_argument("--max-epochs", type=int, default=None,
-                   help="Override optimizer.max_epochs. Default: whatever the base config says.")
+    p.add_argument("--max-epochs", type=int, default=10,
+                   help="optimizer.max_epochs. Pass 0 to inherit the base config's value.")
+
+    # Model capacity. The base config.yaml is rank-32/alpha-64 with no activation
+    # checkpointing, which is tuned for a large GPU and a large training set. These defaults
+    # match config_feb16_2013.yaml instead: far less adapter capacity for a 168-sample member,
+    # and recompute on half the blocks so the run fits comfortably in memory.
+    p.add_argument("--lora-r", type=int, default=8, help="model.lora_config.r.")
+    p.add_argument("--lora-alpha", type=int, default=16, help="model.lora_config.lora_alpha.")
+    p.add_argument("--checkpoint-layers", default="0,2,4,6,8",
+                   help="Comma-separated block indices to activation-checkpoint, or 'none' for "
+                        "no checkpointing. Default: 5 of the 10 blocks.")
+
+    p.add_argument("--wandb-from", default="./config_feb15_2013_g4dn.yaml",
+                   help="Copy every wandb_* key from this config. finetune.py:558,561 fall back "
+                        "to entity 'nasa-impact' and mode 'offline' when the keys are absent, "
+                        "so without this the runs would log to the wrong place. Pass 'none' to "
+                        "keep the base config's wandb settings.")
+    p.add_argument("--no-wandb", action="store_true",
+                   help="Omit --wandb from the generated runner. wandb.init only happens when "
+                        "finetune.py is given that flag, so the wandb_* keys are inert without it.")
     args = p.parse_args()
 
     base = yaml.safe_load(open(args.base_config))
@@ -135,9 +163,23 @@ def main() -> None:
         raise SystemExit(f"Mask directory not found: {args.ar_mask_root}")
 
     os.makedirs(args.out_dir, exist_ok=True)
-    epochs = args.max_epochs if args.max_epochs is not None else base["optimizer"]["max_epochs"]
+    epochs = args.max_epochs or base["optimizer"]["max_epochs"]
     total = len(reps)
     run_lines, rows = [], []
+
+    ckpt_layers = (
+        [] if args.checkpoint_layers.strip().lower() == "none"
+        else [int(x) for x in args.checkpoint_layers.split(",")]
+    )
+
+    wandb_keys = {}
+    if args.wandb_from.strip().lower() != "none":
+        if not os.path.isfile(args.wandb_from):
+            raise SystemExit(f"--wandb-from config not found: {args.wandb_from}")
+        src = yaml.safe_load(open(args.wandb_from))
+        wandb_keys = {k: v for k, v in src.items() if k.startswith("wandb")}
+        if not wandb_keys:
+            raise SystemExit(f"No wandb_* keys found in {args.wandb_from}")
 
     for i, rep_path in enumerate(reps, start=1):
         n_rows = len(pd.read_csv(rep_path))
@@ -159,6 +201,12 @@ def main() -> None:
         cfg["iters_per_epoch_train"] = n_rows
         cfg["optimizer"]["max_epochs"] = epochs
 
+        # --- capacity / memory, and wandb destination ---
+        cfg["model"]["lora_config"]["r"] = args.lora_r
+        cfg["model"]["lora_config"]["lora_alpha"] = args.lora_alpha
+        cfg["model"]["checkpoint_layers"] = list(ckpt_layers)
+        cfg.update(wandb_keys)
+
         name = f"config_boot{i:02d}.yaml"
         out = os.path.join(args.out_dir, name)
         with open(out, "w") as fh:
@@ -167,6 +215,7 @@ def main() -> None:
             yaml.safe_dump(cfg, fh, sort_keys=False, default_flow_style=False)
 
         run_lines.append(RUN_LINE.format(rep=i, total=total,
+                                         wandb="" if args.no_wandb else " --wandb",
                                          config=os.path.relpath(out, ".")))
         rows.append({"member": i, "config": out, "ar_index_train": rep_path,
                      "n_rows": n_rows, "path_experiment": experiment})
@@ -189,6 +238,13 @@ def main() -> None:
     print(f"  runner:   {runner_path}")
     print(f"  index:    {index_path}")
     print(f"  epochs:   {epochs}   samples/member: {n_rows}")
+    print(f"  lora:     r={args.lora_r} alpha={args.lora_alpha}   "
+          f"checkpoint_layers={ckpt_layers}")
+    if wandb_keys:
+        print(f"  wandb:    from {args.wandb_from} -> "
+              + ", ".join(f"{k}={v!r}" for k, v in sorted(wandb_keys.items())))
+        if args.no_wandb:
+            print("            NOTE: --no-wandb, so the runner omits --wandb and these are inert")
     print(f"  valid:    {args.valid_index}   (identical for all {total})")
     print(f"  test:     {args.test_index}   (carried only; finetune.py does not read it)")
     print(f"  masks:    {args.ar_mask_root}")
