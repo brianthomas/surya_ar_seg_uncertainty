@@ -216,6 +216,8 @@ downstream_examples/*/checkpoints/
 downstream_examples/*/checkpoints
 downstream_examples/*/assets/
 downstream_examples/*/assets
+downstream_examples/*/configs_bootstrap
+downstream_examples/*/configs_bootstrap/
 # Local credential file — never commit (contains a GitHub PAT)
 toke.txt
 
