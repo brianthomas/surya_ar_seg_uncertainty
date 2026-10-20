@@ -235,6 +235,45 @@ def wrap_all_checkpoints(model):
             )
 
 
+PATCH_EMBED_WEIGHT = "embedding.patch_embed.proj.weight"
+
+
+def collapse_patch_embed_time_dim(ckpt_weight, model_weight):
+    """Fold a pretrained patch-embedding stem onto this model's time dimension.
+
+    ``PatchEmbed3D`` folds time into the stem conv's input channels as
+    ``in_chans * time_dim`` and feeds it ``x.flatten(1, 2)`` of a (B, C, T, H, W)
+    tensor, so that channel axis runs channel-major/time-minor. Surya was
+    pretrained on two input timestamps (26 = 13 channels x 2) while every config
+    here uses one (``time_delta_input_minutes: [0]``, 13 channels), and the stem
+    is the only tensor whose shape blocks the transfer.
+
+    Summing over the checkpoint's time axis is the reduction that preserves the
+    pretrained stem's response: for two equal input frames,
+    ``proj(x_t0 || x_t1) == (W_t0 + W_t1) x``, which keeps the learned per-channel
+    structure *and* the output scale the frozen backbone downstream expects.
+    Slicing a single timestamp out instead would halve that scale.
+    """
+    out_chans, model_chans = model_weight.shape[0], model_weight.shape[1]
+    ckpt_chans = ckpt_weight.shape[1]
+
+    if ckpt_chans % model_chans != 0:
+        raise ValueError(
+            f"Cannot adapt {PATCH_EMBED_WEIGHT}: checkpoint has {ckpt_chans} input "
+            f"channels, which is not a whole multiple of this model's {model_chans}."
+        )
+
+    time_dim = ckpt_chans // model_chans
+    collapsed = ckpt_weight.view(
+        out_chans, model_chans, time_dim, *ckpt_weight.shape[2:]
+    ).sum(dim=2)
+    print0(
+        f"Adapted {PATCH_EMBED_WEIGHT} from {tuple(ckpt_weight.shape)} to "
+        f"{tuple(collapsed.shape)} by summing over the checkpoint's {time_dim} timestamps."
+    )
+    return collapsed
+
+
 def get_model(config, wandb_logger) -> torch.nn.Module:
     """
     Function to initialize and return the model based on the configuration.
@@ -292,11 +331,23 @@ def get_model(config, wandb_logger) -> torch.nn.Module:
 
     pretrained_path = config["pretrained_path"]
 
-    if config["model"]["model_type"] == "spectformer":
+    # The LoRA variant builds the same backbone and needs the same pretrained weights.
+    # Gating this on "spectformer" alone silently left every `spectformer_lora` run
+    # training a randomly initialized backbone.
+    if config["model"]["model_type"] in ("spectformer", "spectformer_lora"):
         if (pretrained_path is not None) and os.path.exists(pretrained_path):
             print0(f"Loading pretrained model from {pretrained_path}.")
             model_state = model.state_dict()
             checkpoint_state = torch.load(pretrained_path, weights_only=True, map_location="cpu")
+
+            # The stem carries the pretraining time dimension in its channel axis, so it
+            # needs reshaping rather than the shape filter below silently dropping it and
+            # leaving the one tensor the whole backbone reads through at its init values.
+            if PATCH_EMBED_WEIGHT in checkpoint_state and PATCH_EMBED_WEIGHT in model_state:
+                if checkpoint_state[PATCH_EMBED_WEIGHT].shape != model_state[PATCH_EMBED_WEIGHT].shape:
+                    checkpoint_state[PATCH_EMBED_WEIGHT] = collapse_patch_embed_time_dim(
+                        checkpoint_state[PATCH_EMBED_WEIGHT], model_state[PATCH_EMBED_WEIGHT]
+                    )
 
             filtered_checkpoint_state = {
                 k: v
@@ -307,6 +358,18 @@ def get_model(config, wandb_logger) -> torch.nn.Module:
             # 2. Load the filtered weights
             model_state.update(filtered_checkpoint_state)
             model.load_state_dict(model_state, strict=True)
+
+            # That filter drops non-matching keys silently, which is what let the gate bug
+            # above go unnoticed for a full run -- so report what actually transferred.
+            skipped = [k for k in model_state if k not in filtered_checkpoint_state]
+            unused = [k for k in checkpoint_state if k not in filtered_checkpoint_state]
+            print0(
+                f"Loaded {len(filtered_checkpoint_state)}/{len(model_state)} tensors "
+                f"from {pretrained_path} ({len(unused)} checkpoint tensors unused)."
+            )
+            if skipped:
+                shown = ", ".join(skipped[:12]) + (" ..." if len(skipped) > 12 else "")
+                print0(f"Left at initialization ({len(skipped)} tensors): {shown}")
 
         else:
             raise ValueError(f"No checkpoint or pretrained model found at {pretrained_path}.")
