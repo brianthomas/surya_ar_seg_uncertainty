@@ -138,7 +138,7 @@ def main() -> None:
                    help="Comma-separated block indices to activation-checkpoint, or 'none' for "
                         "no checkpointing. Default: 5 of the 10 blocks.")
 
-    p.add_argument("--wandb-from", default="./config_feb15_2013_g4dn.yaml",
+    p.add_argument("--wandb-from", default="./config.yaml",
                    help="Copy every wandb_* key from this config. finetune.py:558,561 fall back "
                         "to entity 'nasa-impact' and mode 'offline' when the keys are absent, "
                         "so without this the runs would log to the wrong place. Pass 'none' to "
