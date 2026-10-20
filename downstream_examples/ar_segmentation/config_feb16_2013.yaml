@@ -123,7 +123,10 @@ num_mask_aia_channels: 0
 drop_hmi_probablity: 0.0
 validate_after_epoch: 1
 wandb_log_train_after: 5 # This should be less than iters_per_epoch_train
-wandb_project: "surya-ws2" # Typical choices: "helio-fm", "spectformer_with_metrics"
+wandb_entity: "surya-ar-seg"
+wandb_project: "surya-ar-segmentation-testing"
+# online needs `wandb login` (or WANDB_API_KEY); offline runs can be pushed later with `wandb sync`
+wandb_mode: "online"
 visualization_samples: 3
 save_wt_after_iter: 100000
 path_experiment: checkpoints_feb16_2013
