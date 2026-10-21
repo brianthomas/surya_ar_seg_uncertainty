@@ -124,7 +124,13 @@ def main() -> None:
     p.add_argument("--ar-mask-root", default="./assets/surya-bench-ar-segmentation",
                    help="Directory holding the mask .h5 tree.")
     p.add_argument("--s3-scratch-dir", default="/tmp/surya_s3_scratch",
-                   help="Staging dir for SDO objects. Needs ~5 GB (8 workers x ~590 MB).")
+                   help="Staging dir for SDO objects. Needs ~590 MB per data worker "
+                        "(~7 GB at the default 12).")
+    p.add_argument("--num-data-workers", type=int, default=12,
+                   help="data.num_data_workers. Set here rather than inherited so regeneration "
+                        "cannot silently revert it: config.yaml ships 8, which is what let "
+                        "boot01 drift from the rest of the ensemble. Scratch space and host RAM "
+                        "both scale with this.")
     p.add_argument("--max-epochs", type=int, default=10,
                    help="optimizer.max_epochs. Pass 0 to inherit the base config's value.")
 
@@ -198,6 +204,7 @@ def main() -> None:
         # --- corrections to the shipped config ---
         cfg["data"]["ar_mask_root_path"] = args.ar_mask_root
         cfg["data"]["s3_scratch_dir"] = args.s3_scratch_dir
+        cfg["data"]["num_data_workers"] = args.num_data_workers
         cfg["iters_per_epoch_train"] = n_rows
         cfg["optimizer"]["max_epochs"] = epochs
 
@@ -237,7 +244,8 @@ def main() -> None:
     print(f"wrote {total} member config(s) to {args.out_dir}")
     print(f"  runner:   {runner_path}")
     print(f"  index:    {index_path}")
-    print(f"  epochs:   {epochs}   samples/member: {n_rows}")
+    print(f"  epochs:   {epochs}   samples/member: {n_rows}   "
+          f"workers: {args.num_data_workers}")
     print(f"  lora:     r={args.lora_r} alpha={args.lora_alpha}   "
           f"checkpoint_layers={ckpt_layers}")
     if wandb_keys:
