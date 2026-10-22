@@ -207,7 +207,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
-wandb/
+
+# other directories
+ wandb/
+downstream_examples/*/wandb/
 logs/
 data/
 runs/
