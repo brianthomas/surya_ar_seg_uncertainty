@@ -126,6 +126,10 @@ def main() -> None:
     p.add_argument("--s3-scratch-dir", default="/tmp/surya_s3_scratch",
                    help="Staging dir for SDO objects. Needs ~590 MB per data worker "
                         "(~7 GB at the default 12).")
+    p.add_argument("--job-id-prefix", default="AR-seg",
+                   help="Prefix for job_id, which finetune.py:559 uses as the wandb run name: "
+                        "'<prefix>_bootNN'. Set it per sample size (e.g. AR-seg_672hr) so "
+                        "ensembles at different training-set sizes stay distinguishable in wandb.")
     p.add_argument("--num-data-workers", type=int, default=12,
                    help="data.num_data_workers. Set here rather than inherited so regeneration "
                         "cannot silently revert it: config.yaml ships 8, which is what let "
@@ -192,7 +196,7 @@ def main() -> None:
         cfg = copy.deepcopy(base)
 
         # --- the three per-member differences ---
-        cfg["job_id"] = f"AR-seg_boot{i:02d}"
+        cfg["job_id"] = f"{args.job_id_prefix}_boot{i:02d}"
         cfg["data"]["ar_index_train"] = [f"./{os.path.relpath(rep_path, '.')}"]
         experiment = os.path.join(args.experiment_root, f"boot{i:02d}")
         cfg["path_experiment"] = experiment
