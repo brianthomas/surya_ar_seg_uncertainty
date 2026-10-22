@@ -209,8 +209,7 @@ marimo/_lsp/
 __marimo__/
 
 # other directories
- wandb/
-downstream_examples/*/wandb/
+wandb/
 logs/
 data/
 runs/
@@ -221,6 +220,7 @@ downstream_examples/*/assets/
 downstream_examples/*/assets
 downstream_examples/*/configs_bootstrap
 downstream_examples/*/configs_bootstrap/
+downstream_examples/*/wandb/
 # Local credential file — never commit (contains a GitHub PAT)
 toke.txt
 
