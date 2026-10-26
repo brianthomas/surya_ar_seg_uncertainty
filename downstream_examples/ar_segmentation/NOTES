@@ -26,3 +26,19 @@ These are wired into config.yaml as ar_index_train / ar_index_valid (test.csv li
 
 Why leaky_validation.csv is separate and called "leaky": it covers the calendar days immediately adjacent to train.csv's start (Feb 15) and wrapping around validation.csv's window (Jan 15–31) — i.e., Jan 1–14 and Feb 1–14. Although no individual timestamp is duplicated across files (verified — zero overlap), active regions rotate and evolve on multi-day timescales, so samples this close to the training window's boundary are temporally correlated with training data, making it an easier/"leaky" validation set rather than a clean held-out one. validation.csv (mid/late January) is the non-leaky held-out split actually used for model selection.
 
+AR-level catalogues (as opposed to the per-timestamp index CSVs above)
+
+These describe *active regions*, one row per HARP, not one row per frame. None are in git; all live in assets/ (a symlink to shared storage). Regenerate any of them with make_holdout_catalog.py — see "Holdout AR catalogs" in README.md.
+
+    harp_catalog_subset.csv — the raw input, and the only one not derived: hourly HARP bounding-box geometry exported from JSOC hmi.Mharp_720s, 2010-05-13 to 2024-12-31, 1,244,172 rows. Columns timestamp, t_rec_tai, harpnum, lat_fwt, lon_fwt, crpix1/2, crsize1/2, lat/lon_min/max. Missing keywords are the literal string MISSING, so it must be read with na_values=["MISSING"]. The test era (2020-2024) holds 496,759 rows over 2,737 HARPs, of which 2,727 have complete geometry.
+    unified_catalog.csv — all four split index CSVs concatenated, tagged by a `source` column. Its `test` segment is content-identical to test.csv (43,848 rows, 41,910 present==1, same file_path values), so either can serve as the overlap source.
+    harp_catalog_test_full.csv — all 2,727 test-era HARPs, ranked by peak deprojected area.
+    holdout_ar_large_from_test.csv — the 88 of the top 100 test-era ARs that deproject cleanly. This is what the uncertainty/inference work actually evaluates on.
+    holdout_ar_large_from_training.csv — the 30 training-era ARs chosen to cost the least data to hold out (no validation/leaky overlap, smallest train overlap). Unlike the test-era file this one required real selection: those ARs sit inside the training window, so holding them out means dropping frames.
+
+    holdout_ar_nonflaring_30_from_test.csv — the non-flaring control set: 30 ARs, 10,000-20,000 million km², each with a NOAA region, at most one flare, that flare below C1.0, and nothing in progress at its peak frame. 27 of the 30 have zero flares outright (recover them by filtering n_flares == 0). Built by annotate_flares.py from the band below; adds 7 flare columns after the canonical 14.
+    holdout_ar_nonflaring_band_annotated.csv — all 216 band ARs with the same flare columns, kept so the selection criteria can be changed via annotate_flares.py --from-annotated with no network access. Of the 216: 131 have a NOAA region, 85 do not; 112 have zero attributed flares, but only 27 both have a region and are flare-free.
+    hek_flares_2020-2024.csv — 95,620 distinct HEK flare events over 2020-2024, cached in 5-day chunks (~349 requests, ~12 min). Reusable for any era or catalog; rebuild with --refresh-cache.
+
+Both holdout_ar_large_* files share one schema, differing only in the trailing <split>_overlap_files column. Ranks are non-contiguous in both because rank is assigned over every AR in the era *before* the deproj/holdout filters — holdout_ar_large_from_test.csv starts at rank 2 because rank 1 (HARP 9475) is a polar limb region tagged deproj: Poor.
+

@@ -138,6 +138,8 @@ def build_catalog(
     top: int,
     deproj_ok_only: bool,
     holdout_select: int,
+    area_min: float | None = None,
+    area_max: float | None = None,
 ) -> pd.DataFrame:
     """Rank the ARs tracked during `split` and return the holdout catalog for it."""
     unified = pd.read_csv(unified_catalog)
@@ -175,6 +177,10 @@ def build_catalog(
         peak = peak[peak["rank"] <= top]
     if deproj_ok_only:
         peak = peak[peak["deproj"] == "OK"]
+    if area_min is not None:
+        peak = peak[peak["area_km2_million"] >= area_min]
+    if area_max is not None:
+        peak = peak[peak["area_km2_million"] <= area_max]
 
     if holdout_select:
         # An AR is only eligible if holding it out costs no validation data at all; among
@@ -212,6 +218,10 @@ def main() -> None:
                    help="Keep only ranks up to this; 0 keeps every AR in the era.")
     p.add_argument("--deproj-ok-only", action=argparse.BooleanOptionalAction, default=True,
                    help="Drop limb ARs, whose deprojected area is not trustworthy.")
+    p.add_argument("--area-min", type=float, default=None,
+                   help="Keep only ARs at least this large, in area_km2_million.")
+    p.add_argument("--area-max", type=float, default=None,
+                   help="Keep only ARs at most this large, in area_km2_million.")
     p.add_argument("--holdout-select", type=int, default=0,
                    help="Narrow to this many ARs that cost the least data to hold out. "
                         "Only meaningful for splits a model trains on.")
@@ -221,6 +231,7 @@ def main() -> None:
     catalog = build_catalog(
         args.harp_catalog, args.unified_catalog, args.split,
         args.top, args.deproj_ok_only, args.holdout_select,
+        args.area_min, args.area_max,
     )
     catalog.to_csv(args.out, index=False)
 
