@@ -153,6 +153,160 @@ but 21 samples from a single day covers one active-region configuration, so read
 metric as a smoke signal, not as real performance. Checkpoints go to
 `checkpoints_feb15_2013/` so they do not overwrite a full run.
 
+### Holdout AR catalogs
+
+Uncertainty runs are evaluated on a handful of large, well-resolved ARs rather than on the
+whole split. `make_holdout_catalog.py` builds those shortlists. Each AR is summarised at its
+*peak* -- the hour its deprojected bounding box is largest -- and ranked by that area:
+
+```bash
+# 2020-2024, the 88 largest cleanly-deprojected ARs
+python make_holdout_catalog.py --split test \
+    --out assets/surya-bench-ar-segmentation/holdout_ar_large_from_test.csv
+
+# every test-era HARP, unfiltered
+python make_holdout_catalog.py --split test --top 0 --no-deproj-ok-only \
+    --out assets/harp_catalog_test_full.csv
+
+# 2010-2019, the 30 ARs that cost the least training data to hold out
+python make_holdout_catalog.py --split train --holdout-select 30 \
+    --out assets/surya-bench-ar-segmentation/holdout_ar_large_from_training.csv
+```
+
+Two inputs are needed, neither of which `download_data.sh` fetches:
+`harp_catalog_subset.csv` (hourly HARP bounding boxes exported from JSOC `hmi.Mharp_720s`,
+2010-05-13 to 2024-12-31) and `unified_catalog.csv` (every split concatenated, tagged by a
+`source` column). Pass them with `--harp-catalog` / `--unified-catalog`; the defaults assume
+both sit in `assets/`. The script does no network access -- the JSOC export is a prerequisite,
+not something it performs.
+
+Areas are deprojected with `R_sun = 696,000 km`, scaling the longitudinal extent by
+`cos(mean latitude)` so an AR's true size is ranked rather than its foreshortened one. ARs
+within 50 deg of a limb are still unreliable at that correction, so they are tagged
+`deproj: Poor` and dropped unless `--no-deproj-ok-only` is passed. **`rank` is assigned over
+every AR in the era before filtering**, which is why the filtered files have non-contiguous
+ranks -- `holdout_ar_large_from_test.csv` starts at rank 2 because rank 1 (HARP 9475) is a
+polar limb region.
+
+`<split>_overlap_files` counts how many of that split's mask files the AR appears in, i.e. how
+much data a run loses by holding it out. The 2020-2024 era needs no holdout *selection* --
+training stops at 2019-12-31, so it is held out by construction. `--holdout-select` exists for
+eras a model trains on: it keeps only ARs that touch no validation or leaky-validation frame
+at all, then takes the N with the smallest training overlap.
+
+The catalogs themselves are not in git -- `assets/` is a symlink to shared storage, and the
+HARP export is far too large to vendor. The script does reproduce all three existing catalogs
+byte-for-byte, so a regenerated file can be diffed against the copy already on disk as a
+correctness check before overwriting it:
+
+```bash
+python make_holdout_catalog.py --split test --out /tmp/rebuilt.csv
+diff assets/surya-bench-ar-segmentation/holdout_ar_large_from_test.csv /tmp/rebuilt.csv
+```
+
+### Non-flaring control set
+
+The large-AR holdout is deliberately extreme -- the top three are 9-11 region complexes,
+two of them EUV-flaring, with masks 3.9-4.3 % positive against 0.643 % for training-era
+validation frames. Spread measured only there cannot separate "large" from "active". The
+control set is mid-sized and quiescent, built in two steps:
+
+```bash
+# 1. the area band, no network
+python make_holdout_catalog.py --split test --top 0 \
+    --area-min 10000 --area-max 20000 --out /tmp/band.csv        # 216 ARs
+
+# 2. flare-annotate and select (first run fetches HEK, ~12 min)
+PYTHONPATH=../.. python annotate_flares.py --catalog /tmp/band.csv \
+    --annotated-out assets/surya-bench-ar-segmentation/holdout_ar_nonflaring_band_annotated.csv \
+    --select-nonflaring 30 --allow-below-class C1.0 --max-flares 1 \
+    --out assets/surya-bench-ar-segmentation/holdout_ar_nonflaring_30_from_test.csv
+```
+
+`annotate_flares.py` appends `lifetime_start, lifetime_end, noaa_regions, n_flares,
+max_goes_class, n_euv_events, flaring_at_peak` to the catalog's canonical 14 columns, so
+anything reading the family schema by name is unaffected. Re-select under different criteria
+with `--from-annotated`, which reuses the annotated CSV and touches the network not at all.
+
+Two measures of activity are recorded because neither suffices alone. GOES-classified flares
+are matched by NOAA region (`ar_noaanum % 10000` -- HEK truncates the leading 1 inconsistently,
+returning both `3839` and `13839` for 2024-10-01). Flare Detective rows carry **no** NOAA
+number and no GOES class at all, only `hgs_x`/`hgs_y`, so they are matched positionally against
+the HARP's *hourly* bounding box; a fixed box would be wrong by most of a solar radius by the
+end of a 13-day track as the AR rotates across the disk.
+
+What the criteria above mean, and why they are not looser:
+
+* **A NOAA region is required.** 85 of the 216 band ARs have none, and for those "non-flaring"
+  is unverifiable rather than verified -- with no region number nothing *can* be attributed, so
+  zero flares is trivially true and is not evidence of quiescence.
+* **`--max-flares` is not optional in practice.** Filtering on peak class alone admitted an AR
+  with 58 B-class flares and another flaring at its own peak timestamp. Class caps magnitude,
+  not activity.
+* **27 of the 30 have zero flares outright**; the other three have a single B-class microflare
+  (B7.9, B8.5, B9.0), all below the conventional C1.0 floor. The zero-flare 27 are exactly the
+  `n_flares == 0` subset, so the stricter set needs no separate file.
+
+Only 6 of the 30 also have zero EUV detections -- these ARs are quiet in GOES terms, not inert.
+Use `--require-euv-quiet` if that matters, but it will not yield 30 from this band.
+
+### Boundary and calibration statistics over a whole holdout cohort
+
+`view_harp11930_ensemble_mean_672hr.ipynb` measures boundary localization (its section 6) and
+calibration (section 7) on **one** frame. `analyze_holdout_sections67.py` runs the identical
+measurements over any number of frames, so those single-frame numbers can be read as
+distributions. Three steps, in order:
+
+```bash
+# 1. stage the one input cube per AR the catalog names (30 cubes, 15.7 GB)
+python download_holdout_nc.py --dry-run          # check the keys and the byte count first
+python download_holdout_nc.py
+
+# 2. every member's best checkpoint over every cube (300 inferences, ~70 min on a T4)
+PYTHONPATH=../.. python run_bootstrap_inference.py --regime 672hr \
+    --nc_dir /efs/bathomas/assets/holdout_nc_nonflaring30 \
+    --output_root /efs/bathomas/ar_seg_bootstrap/672hr_infer_holdout_nonflaring30
+
+# 3. sections 6 and 7 per frame, cached + four tidy CSVs (~45 s per frame, CPU only)
+python analyze_holdout_sections67.py \
+    --infer_root /efs/bathomas/ar_seg_bootstrap/672hr_infer_holdout_nonflaring30 \
+    --frames_csv /efs/bathomas/assets/holdout_nc_nonflaring30/frames.csv
+```
+
+`view_holdout_nonflaring30_sections67_672hr.ipynb` then reads the cache and does the
+cross-AR statistics: mean +/- between-frame sd of uncertainty / error / their ratio, the
+per-member ranking with Kendall's *W*, a one-way random-effects split of the per-member ASSD
+into between-frame and between-member variance, the exact pooled boundary-distance ECDF and
+reliability curve, and three exemplar ARs.
+
+Disk: 15.7 GB of input cubes plus ~23 GB of inference output (`channels.nc` is 436 MB per
+frame and is only needed for the exemplar figures). Both live on EFS.
+
+Three things worth knowing before reading the output:
+
+* **`--regime` selects the ensemble.** Everything above is parameterized the same way
+  `run_bootstrap_inference.py` is, so the `168hrs` cohort is the same three commands with one
+  flag changed. `2016hr` is not reachable until it has an entry in `BEST_EPOCH_BY_REGIME`.
+* **The analysis script never imports torch.** Each member's epoch and validation IoU come
+  from the `prob_*.nc` attributes, which record what actually ran; `--check-best-epoch`
+  cross-checks them against `BEST_EPOCH_BY_REGIME` and is the only path that pulls in the
+  model stack.
+* **Section 6 needs the input cube's WCS**, read per frame because `rsun_obs` swings ~2.7 %
+  across this cohort with the Earth-Sun distance. The plate scale is also cached into each
+  `ensemble_mean.nc`, so the cubes can be deleted afterwards without invalidating the CSVs --
+  but a re-run then means re-downloading.
+
+To confirm a change to `analyze_holdout_sections67.py` did not alter the measurement, run it
+against the single frame the notebook published numbers for. It reproduces all of them
+(uncertainty 5.2541 +/- 1.8884 px, error 10.8812 px, ratio 2.0710x, sigma_p 0.2298,
+Brier 0.1148, bias -0.0603, and the per-member ASSD column):
+
+```bash
+python analyze_holdout_sections67.py \
+    --infer_root /efs/bathomas/ar_seg_bootstrap/672hr_infer_holdout_top3 \
+    --frames 20241001_1200 --out_dir /tmp/regression --no-cache
+```
+
 ### Relocating the AR mask files
 
 The AR label masks (`.h5`) are read from `data.ar_mask_root_path`, which defaults to
@@ -218,6 +372,9 @@ ar_segmentation/
 ├── config.yaml                  # Training configuration
 ├── download_data.sh            # Data download script
 ├── create_ar_csv.py            # Dataset indexing script
+├── make_day_index.py           # Single-day SDO + AR index generator
+├── make_holdout_catalog.py     # Largest-AR holdout catalogs, per split
+├── annotate_flares.py          # Flare annotation + non-flaring selection
 ├── finetune.py                 # Training script
 ├── infer.py                    # Inference script
 ├── run_inference_example.sh    # Inference example

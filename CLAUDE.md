@@ -128,6 +128,29 @@ Two things beyond `download_data.sh` are needed (see `README.md` for full detail
 - `infer.py` — loads a checkpoint (either LoRA fine-tuned or full) and runs segmentation
   inference, producing multi-panel PNG visualizations (input channels / prediction / ground truth).
 - `create_ar_csv.py` — builds/regenerates the AR index CSVs consumed by `dataset.py`.
+- `make_holdout_catalog.py` — builds the largest-AR holdout catalogs
+  (`assets/surya-bench-ar-segmentation/holdout_ar_large_from_{test,training}.csv`) that the
+  uncertainty/inference work evaluates on, from a JSOC `hmi.Mharp_720s` geometry export plus
+  `unified_catalog.csv`. Split-parameterized (`--split`), and reproduces all three existing
+  catalogs byte-for-byte — diff against the on-disk copy to check a change. See
+  "Holdout AR catalogs" in `downstream_examples/ar_segmentation/README.md`.
+- `download_holdout_nc.py` — stages the one SDO cube per AR that a holdout catalog names
+  (`YYYY/MM/YYYYMMDD_HHMM.nc` from the public bucket, via `surya.utils.s3.make_s3_client`),
+  and writes `frames.csv` — the harpnum/frame/truth-path join key every later step uses.
+  Resumable: size-checked skips, and transfers land on `.part` before being renamed.
+- `analyze_holdout_sections67.py` — sections 6 (boundary ASSD/median/HD95 against both the
+  ensemble mean and the truth mask, plus the `sigma_r = sigma_p / |grad p-bar|` cross-check)
+  and 7 (reliability bins, Brier, bias, ECE) of `view_harp11930_ensemble_mean_672hr.ipynb`,
+  run over every frame of an inference root instead of one. CPU-only — reads each member's
+  epoch from the `prob_*.nc` attrs rather than importing `run_bootstrap_inference`. Writes a
+  per-frame `ensemble_mean.nc` using section 8's own attribute names, plus four tidy CSVs.
+  Reproduces the notebook's published single-frame numbers exactly; see "Boundary and
+  calibration statistics over a whole holdout cohort" in the example's README.
+- `annotate_flares.py` — annotates an AR catalog with flare activity (HEK + JSOC `NOAA_ARS`)
+  and selects the non-flaring ones, reusing `flare_context.py`'s `hek_flares`,
+  `parse_noaa_ars` and `goes_magnitude` rather than reimplementing them. Builds
+  `holdout_ar_nonflaring_30_from_test.csv`, the quiescent mid-sized control set for the
+  large/flaring holdout. `--from-annotated` re-selects with no network access.
 - `config.yaml` / `config_infer.yaml` — training/inference configs; see "Before fine-tuning can
   run" above for the two fields that need local overrides.
 
