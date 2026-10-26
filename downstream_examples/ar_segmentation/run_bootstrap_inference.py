@@ -19,9 +19,19 @@ rather than one:
   * It is resumable. Existing outputs are skipped, so an interrupted run resumes
     where it stopped.
 
+Two training regimes exist, selected by `--regime`: `168hrs` (168-sample, one-week
+bootstrap replicates) and `672hr` (672-sample, one-month replicates). They differ only
+in how much data each member saw -- same LoRA geometry, same backbone, same validation
+set -- so the regime picks the weights/config/output roots and the best-epoch table and
+changes nothing else.
+
 Example:
     PYTHONPATH=<repo root> python run_bootstrap_inference.py \
         --output_root /efs/bathomas/ar_seg_bootstrap/168hrs_infer
+
+    PYTHONPATH=<repo root> python run_bootstrap_inference.py --regime 672hr \
+        --nc_dir /efs/bathomas/assets/holdout_nc_11930 \
+        --output_root /efs/bathomas/ar_seg_bootstrap/672hr_infer_holdout_top3
 """
 
 import argparse
@@ -41,32 +51,64 @@ from infer_file import normalize, read_hc_file, timestamp_from_file
 from surya.utils.data import build_scalers
 from surya.utils.distributed import set_global_seed
 
-# Best epoch per member, by validation IoU on the shared 200-frame validation set.
+# Best epoch per member per regime, by validation IoU on the shared 200-frame
+# validation set. Keyed (epoch, val_iou, wandb_run_id).
 #
 # Re-derive with:
 #   grep -o 'IoU: [0-9.]*' <wandb run>/files/output.log   # one line per epoch, 0-indexed
 #
-# Confirmed 2026-10-22 against the output.log of every run listed in
-# /efs/bathomas/ar_seg_bootstrap/168hrs/README.md, which tabulates the same values.
-# boot01 trained 20 epochs, the rest 10; its peak at epoch 8 is never beaten in the
-# twelve later epochs.
-BEST_EPOCH = {
-    "boot01": (8, 0.5170, "b919pvy1"),
-    "boot02": (9, 0.5050, "zz6vdbsd"),
-    "boot03": (9, 0.5256, "xu7fqbem"),
-    "boot04": (5, 0.5344, "jkdf1iu9"),
-    "boot05": (6, 0.5539, "zeddewff"),
-    "boot06": (4, 0.4950, "m2mmkryf"),
-    "boot07": (3, 0.4812, "noa3fm8f"),
-    "boot08": (8, 0.4927, "ftqm9isf"),
-    "boot09": (8, 0.4918, "v7ea6fcs"),
-    "boot10": (7, 0.5194, "wepnogck"),
+# `epoch_N.pth` is saved and *then* evaluated (finetune.py's epoch loop), so the Nth
+# validation line is the score of epoch_N.pth. Map a wandb run to its member by the
+# --config_path in its files/wandb-metadata.json `args`.
+BEST_EPOCH_BY_REGIME = {
+    # Confirmed 2026-10-22 against the output.log of every run listed in
+    # /efs/bathomas/ar_seg_bootstrap/168hrs/README.md, which tabulates the same values.
+    # boot01 trained 20 epochs, the rest 10; its peak at epoch 8 is never beaten in the
+    # twelve later epochs.
+    "168hrs": {
+        "boot01": (8, 0.5170, "b919pvy1"),
+        "boot02": (9, 0.5050, "zz6vdbsd"),
+        "boot03": (9, 0.5256, "xu7fqbem"),
+        "boot04": (5, 0.5344, "jkdf1iu9"),
+        "boot05": (6, 0.5539, "zeddewff"),
+        "boot06": (4, 0.4950, "m2mmkryf"),
+        "boot07": (3, 0.4812, "noa3fm8f"),
+        "boot08": (8, 0.4927, "ftqm9isf"),
+        "boot09": (8, 0.4918, "v7ea6fcs"),
+        "boot10": (7, 0.5194, "wepnogck"),
+    },
+    # Derived 2026-10-26 from /efs/bathomas/wandb. boot01 trained 10 epochs, the rest 5.
+    # Peaks land early -- epoch 0 to 3 -- and most members then collapse hard (boot02 to
+    # 0.0000, boot06 to 0.0572, boot03 to 0.1935), so "best epoch" selects much more
+    # aggressively here than in the 168hrs regime. boot08 peaks at epoch 0, making it a
+    # one-epoch model; it is kept because the ensemble is defined as every run's best.
+    # There is a second config_boot01 run (xf5z2wlg) that logged zero epochs -- a crashed
+    # start six minutes before nb9lm7a4; nb9lm7a4 is the real one.
+    "672hr": {
+        "boot01": (2, 0.6036, "nb9lm7a4"),
+        "boot02": (1, 0.5608, "dtcinrgm"),
+        "boot03": (2, 0.6169, "g03bele4"),
+        "boot04": (1, 0.6314, "1gu2f1ak"),
+        "boot05": (2, 0.6341, "ga1mu7nf"),
+        "boot06": (1, 0.6089, "w9g5wx72"),
+        "boot07": (3, 0.6104, "s32mafh0"),
+        "boot08": (0, 0.5177, "9rb2iybc"),
+        "boot09": (1, 0.5621, "6xowxfq6"),
+        "boot10": (2, 0.5699, "0c76ze9m"),
+    },
 }
 
-DEFAULT_WEIGHTS_ROOT = "/efs/bathomas/ar_seg_bootstrap/168hrs"
-DEFAULT_CONFIG_DIR = "/efs/bathomas/configs_bootstrap/168hrs"
+DEFAULT_REGIME = "168hrs"
 DEFAULT_NC_DIR = "./assets/infer_data"
-DEFAULT_OUTPUT_ROOT = "/efs/bathomas/ar_seg_bootstrap/168hrs_infer"
+
+
+def regime_defaults(regime: str) -> dict:
+    """Weights / config / output roots for a regime, all named after it on disk."""
+    return {
+        "weights_root": f"/efs/bathomas/ar_seg_bootstrap/{regime}",
+        "config_dir": f"/efs/bathomas/configs_bootstrap/{regime}",
+        "output_root": f"/efs/bathomas/ar_seg_bootstrap/{regime}_infer",
+    }
 
 
 def load_member_config(config_dir: str, member: str, dtype: torch.dtype) -> dict:
@@ -150,15 +192,27 @@ def main():
     parser = argparse.ArgumentParser(
         "Run every bootstrap member's best checkpoint over every inference .nc file"
     )
-    parser.add_argument("--weights_root", default=DEFAULT_WEIGHTS_ROOT)
-    parser.add_argument("--config_dir", default=DEFAULT_CONFIG_DIR)
+    parser.add_argument(
+        "--regime",
+        default=DEFAULT_REGIME,
+        choices=sorted(BEST_EPOCH_BY_REGIME),
+        help=(
+            "Training regime: 168hrs (one-week replicates) or 672hr (one-month). Sets "
+            "the best-epoch table and the default weights/config/output roots; the "
+            "three --*_root flags below override those defaults individually."
+        ),
+    )
+    # Default None rather than a regime-derived path, so an explicit flag is
+    # distinguishable from a default and the regime can fill the rest in below.
+    parser.add_argument("--weights_root", default=None)
+    parser.add_argument("--config_dir", default=None)
     parser.add_argument("--nc_dir", default=DEFAULT_NC_DIR)
-    parser.add_argument("--output_root", default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--output_root", default=None)
     parser.add_argument(
         "--members",
         nargs="+",
-        default=sorted(BEST_EPOCH),
-        help="Subset of members to run. Defaults to all ten.",
+        default=None,
+        help="Subset of members to run. Defaults to all ten of the regime.",
     )
     parser.add_argument(
         "--max_files",
@@ -181,7 +235,18 @@ def main():
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
+    best_epoch = BEST_EPOCH_BY_REGIME[args.regime]
+    defaults = regime_defaults(args.regime)
+    for name, value in defaults.items():
+        if getattr(args, name) is None:
+            setattr(args, name, value)
+    if args.members is None:
+        args.members = sorted(best_epoch)
+
     set_global_seed(42)
+
+    print(f"Regime {args.regime}:  weights {args.weights_root}  "
+          f"configs {args.config_dir}  ->  {args.output_root}")
 
     dtype = getattr(torch, args.dtype)
     if args.device == "cuda" and torch.cuda.is_available():
@@ -205,9 +270,12 @@ def main():
     # loads instead of 150. The cost is re-reading each cube per member, which is
     # the cheaper half (~5 s read vs ~7 s load) and parallel-free either way.
     for member in args.members:
-        if member not in BEST_EPOCH:
-            raise SystemExit(f"Unknown member {member!r}; known: {sorted(BEST_EPOCH)}")
-        epoch, val_iou, run_id = BEST_EPOCH[member]
+        if member not in best_epoch:
+            raise SystemExit(
+                f"Unknown member {member!r} for regime {args.regime}; "
+                f"known: {sorted(best_epoch)}"
+            )
+        epoch, val_iou, run_id = best_epoch[member]
         ckpt = os.path.join(args.weights_root, member, f"epoch_{epoch}.pth")
         if not os.path.exists(ckpt):
             raise SystemExit(f"Missing checkpoint {ckpt}")
@@ -250,6 +318,7 @@ def main():
                 prob_path,
                 probability,
                 member=member,
+                regime=args.regime,
                 epoch=epoch,
                 val_iou=val_iou,
                 wandb_run=run_id,
@@ -260,8 +329,8 @@ def main():
                 autocast_dtype=args.dtype,
             )
             rows.append(
-                dict(member=member, epoch=epoch, val_iou=val_iou, file=stem,
-                     data_time=timestamp, pred_frac=frac,
+                dict(member=member, regime=args.regime, epoch=epoch, val_iou=val_iou,
+                     file=stem, data_time=timestamp, pred_frac=frac,
                      read_s=round(t_read, 1), fwd_s=round(t_fwd, 1))
             )
             print(f"  {stem}: AR {100 * frac:.3f}% of frame  "
