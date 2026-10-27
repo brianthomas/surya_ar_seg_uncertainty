@@ -117,10 +117,18 @@ learning_rate stays 1e-3 deliberately. 672hr reaches the highest IoU of any regi
 despite the instability, so the LR magnitude is productive; clipping is the targeted fix for
 occasional blow-ups and does not cost convergence speed the way dropping to 2e-4 would.
 
-NOTE ON WHAT IS DOING THE WORK: cosine leaves the LR at 9.8e-4 / 9.1e-4 during epochs 1-2, which
-is where the old members collapsed -- effectively the old flat 1e-3. So **grad clipping alone is
-what has to prevent those collapses.** If they recur, the schedule is not the reason and lowering
-learning_rate is the next lever, not a longer warmup.
+WHAT IS ACTUALLY DOING THE WORK (measured 2026-10-27, boot01): **not grad clipping.** This entry
+originally predicted "grad clipping alone is what has to prevent those collapses," reasoning that
+cosine leaves the LR at 9.8e-4 / 9.1e-4 during epochs 1-2 where the old members collapsed. That
+prediction is falsified: across 1,350 logged training batches, **0 exceeded the 1.0 clip
+threshold** -- max grad norm was 0.570 (epoch 0, during warmup), p99 was 0.099, and the median
+fell from 0.017 to 0.007 over the run. Clipping never engaged, so it cannot be credited.
+
+Warmup and/or cosine decay prevented the collapse, and one run cannot separate them. The clip at
+1.0 is best read as a safety net that never needed to fire: the old run's spikes reached loss 655
+and would have produced gradients orders of magnitude above anything seen here. Leave it in --
+it costs nothing and it is the only thing that would catch a genuine explosion -- but do not
+attribute the stability to it. If collapses ever recur, lowering learning_rate is the lever.
 
 The replicate indices, evaluation indices, LoRA rank/alpha, workers and dtype are identical to
 the old 672hr set, and checkpoints go to .../ar_seg_bootstrap/672hr_stable/bootNN, so this is a
@@ -137,3 +145,58 @@ CAVEAT: if this ensemble supersedes the old 672hr one, the sections 6/7 analysis
 the 2.28x error/uncertainty ratio, "member diversity is lost") has to be redone. Some of those
 conclusions may be artifacts of members collapsing at different random epochs rather than real
 consequences of 4x the training data.
+
+672hr_stable boot01 result (2026-10-27, wandb k5gwnlfb, L40S, 6h21m for 10 epochs)
+
+Ran under the 10-epoch configs now preserved in configs_bootstrap/672hr_stable.10ep.20261027/.
+The live config set is 6 epochs -- see below for why.
+
+ep  train loss  val loss  val/train  val IoU  gnorm med  gnorm max
+ 0     0.00870   0.00990       1.14   0.5572      0.017      0.570
+ 1     0.00530   0.01040       1.96   0.5771      0.014      0.070
+ 2     0.00444   0.01120       2.52   0.5683      0.014      0.049
+ 3     0.00411   0.01070       2.60   0.5798      0.014      0.113
+ 4     0.00406   0.01020       2.51   0.5798      0.013      0.115
+ 5     0.00320   0.01160       3.62   0.5921      0.012      0.058
+ 6     0.00259   0.01280       4.95   0.5952      0.010      0.060
+ 7     0.00223   0.01330       5.96   0.5926      0.010      0.096
+ 8     0.00203   0.01380       6.79   0.6016      0.008      0.048   <- best.pth (by valid/iou)
+ 9     0.00202   0.01410       6.98   0.6015      0.007      0.031
+
+VERDICT: no collapse -- the stabilization worked -- but the model is mildly OVERTRAINED, and in a
+different way from 2016hr. 2016hr diverged, with train and val loss rising together. Here a real
+generalization gap opens: train loss falls 4.3x while val loss RISES 1.42x, and the val/train
+ratio climbs 1.14 -> 6.98 monotonically. That is textbook overfitting. valid/loss bottoms out at
+epoch 0 and rises steadily from epoch 4. Meanwhile IoU plateaus: the last four epochs span
+0.5926-0.6016, flat within noise, and epoch 9 is -0.0001 against epoch 8. Not undertrained --
+nothing suggests more epochs help. IoU creeps up while the probabilities get worse because BCE
+punishes confident errors and a 0.5 threshold does not care about confidence magnitude.
+
+THE FIX BOUGHT ROBUSTNESS, NOT ACCURACY. Against old 672hr boot01 (flat lr 1e-3):
+                    old 672hr          new 672hr_stable
+  peak IoU          0.6036 (ep2)       0.6016 (ep8)
+  val loss at peak  0.0088             0.0138
+  final IoU (ep9)   0.4169             0.6015
+Both hit IoU 0.5572 at epoch 0 (same seed, same replicate; warmup touches only 70 of 672 steps).
+The old run climbed faster and peaked both higher AND better calibrated at epoch 2, then destroyed
+itself at epoch 5 (IoU 0.2284, val loss 0.4144). The new run is slower, steadier, and lands at a
+statistically indistinguishable peak. So the gain is a usable final checkpoint (+0.185 IoU) and no
+more best-epoch archaeology -- not a higher ceiling. Awkward corollary: the single best boot01
+checkpoint in existence is still the OLD run's epoch_2.pth (IoU 0.6036, val loss 0.0088).
+
+IMPLICATION FOR THE UQ WORK: BEST_EPOCH_BY_REGIME selects on IoU, which here picks epoch 8 -- the
+second-worst-calibrated checkpoint of the run. Overfit members saturate their probabilities toward
+0/1, which shrinks inter-member disagreement. That is a plausible contributor to the documented
+"ensemble spread understates error by 2.2-2.3x": the spread may be tight partly because members
+are individually overconfident, not because the prediction is good. Hypothesis consistent with
+this run, not proven by it. finetune.py now takes optimizer.best_metric (valid/iou default,
+valid/dice or valid/loss accepted) so the criterion can be switched; and because every epoch_N.pth
+is kept, selection can also be redone post-hoc without retraining.
+
+WHY THE LIVE SET IS 6 EPOCHS: epochs 6-9 cost ~1.6 TB and ~2.5 h each for +0.006 IoU (noise) and
++10% val loss. Cutting to 6 saves ~14 TB and ~23 h across the nine remaining members. A 6-epoch
+config is NOT the same as stopping a 10-epoch run at 6 -- the cosine total is max_epochs x 672, so
+6 epochs anneals to min_lr by epoch 6 instead of sitting near 3.5e-4 there, and should land
+slightly better than this run's epoch 6 did. boot01 therefore needs re-running at 6 epochs before
+it joins members 2-10 in a BEST_EPOCH_BY_REGIME entry; mixing budgets is what made the old 672hr
+set (boot01 at 10, the rest at 5) hard to compare.
