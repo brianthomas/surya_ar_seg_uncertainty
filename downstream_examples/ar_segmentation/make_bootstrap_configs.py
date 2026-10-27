@@ -46,6 +46,21 @@ The 2016hr ensemble, with the optimizer settings that keep a 2016-step epoch fro
         --test-index ./assets/subsamples/ar_index_leaky_validation_1day.csv \\
         --max-epochs 5 \\
         --learning-rate 0.0002 --lr-schedule cosine --warm-up-steps 200 --grad-clip-norm 1.0
+
+The 672hr_stable ensemble -- the 672hr replicates re-run with clipping and warmup, keeping
+lr 1e-3 because 672hr reaches the highest IoU of any regime despite its instability. Written
+to its own out-dir/experiment-root/job-id-prefix so the original 672hr set stays intact:
+
+    python make_bootstrap_configs.py \\
+        --replicate-dir ./assets/bootstrap_train_1month \\
+        --out-dir ./configs_bootstrap/672hr_stable \\
+        --runner ./run_bootstrap_ensemble_672hr_stable.sh \\
+        --experiment-root /mnt/efs/bathomas/ar_seg_bootstrap/672hr_stable \\
+        --job-id-prefix AR-seg_672hr_stable \\
+        --valid-index ./assets/subsamples/ar_index_validation_1day.csv \\
+        --test-index ./assets/subsamples/ar_index_leaky_validation_1day.csv \\
+        --max-epochs 10 \\
+        --learning-rate 0.001 --lr-schedule cosine --warm-up-steps 70 --grad-clip-norm 1.0
 """
 
 import argparse
