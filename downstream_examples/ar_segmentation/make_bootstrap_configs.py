@@ -32,6 +32,20 @@ Usage:
     python make_bootstrap_configs.py
     python make_bootstrap_configs.py --max-epochs 5
     python make_bootstrap_configs.py --replicate-dir assets/bootstrap_train_1week
+
+The 2016hr ensemble, with the optimizer settings that keep a 2016-step epoch from diverging
+(see --learning-rate and the three flags under it):
+
+    python make_bootstrap_configs.py \\
+        --replicate-dir ./assets/bootstrap_train_2016hr \\
+        --out-dir ./configs_bootstrap/2016hr \\
+        --runner ./run_bootstrap_ensemble_2016hr.sh \\
+        --experiment-root /mnt/efs/bathomas/ar_seg_bootstrap/2016hr \\
+        --job-id-prefix AR-seg_2016hr \\
+        --valid-index ./assets/subsamples/ar_index_validation_1day.csv \\
+        --test-index ./assets/subsamples/ar_index_leaky_validation_1day.csv \\
+        --max-epochs 5 \\
+        --learning-rate 0.0002 --lr-schedule cosine --warm-up-steps 200 --grad-clip-norm 1.0
 """
 
 import argparse
@@ -138,6 +152,26 @@ def main() -> None:
     p.add_argument("--max-epochs", type=int, default=10,
                    help="optimizer.max_epochs. Pass 0 to inherit the base config's value.")
 
+    # Optimizer stability. The base config's lr 1e-3 with no schedule and no clipping is only
+    # safe for short epochs: it held up at 168 steps/epoch, spiked on isolated epochs at 672
+    # (run_672.log has one at validation loss 121.1, IoU 0.0000), and diverged outright at 2016
+    # -- training BCE peaked at 930 in epoch 1 and validation IoU fell from 0.5672 to 0.1071
+    # over the remaining four epochs. Anything at or above ~672 steps/epoch wants a lower LR
+    # plus warmup and clipping; see the 2016hr invocation in the module docstring.
+    p.add_argument("--learning-rate", type=float, default=0.0,
+                   help="optimizer.learning_rate. Pass 0 to inherit the base config's value.")
+    p.add_argument("--lr-schedule", default="constant", choices=["constant", "cosine"],
+                   help="optimizer.lr_schedule, read by finetune.py:build_lr_scheduler. "
+                        "'cosine' means linear warmup over --warm-up-steps then cosine decay to "
+                        "optimizer.min_lr. 'constant' reproduces the pre-schedule behaviour that "
+                        "the 168hrs and 672hr ensembles ran under.")
+    p.add_argument("--warm-up-steps", type=int, default=0,
+                   help="optimizer.warm_up_steps. Only has effect with --lr-schedule cosine. "
+                        "~10%% of one epoch is a reasonable starting point.")
+    p.add_argument("--grad-clip-norm", type=float, default=0.0,
+                   help="optimizer.grad_clip_norm, the max_norm passed to clip_grad_norm_. "
+                        "0 disables clipping, matching every run before this flag existed.")
+
     # Model capacity. The base config.yaml is rank-32/alpha-64 with no activation
     # checkpointing, which is tuned for a large GPU and a large training set. These defaults
     # match config_feb16_2013.yaml instead: far less adapter capacity for a 168-sample member,
@@ -212,6 +246,13 @@ def main() -> None:
         cfg["iters_per_epoch_train"] = n_rows
         cfg["optimizer"]["max_epochs"] = epochs
 
+        # --- optimizer stability ---
+        if args.learning_rate:
+            cfg["optimizer"]["learning_rate"] = args.learning_rate
+        cfg["optimizer"]["lr_schedule"] = args.lr_schedule
+        cfg["optimizer"]["warm_up_steps"] = args.warm_up_steps
+        cfg["optimizer"]["grad_clip_norm"] = args.grad_clip_norm
+
         # --- capacity / memory, and wandb destination ---
         cfg["model"]["lora_config"]["r"] = args.lora_r
         cfg["model"]["lora_config"]["lora_alpha"] = args.lora_alpha
@@ -252,6 +293,9 @@ def main() -> None:
           f"workers: {args.num_data_workers}")
     print(f"  lora:     r={args.lora_r} alpha={args.lora_alpha}   "
           f"checkpoint_layers={ckpt_layers}")
+    lr = args.learning_rate or base["optimizer"]["learning_rate"]
+    print(f"  optim:    lr={lr:g}  schedule={args.lr_schedule}  "
+          f"warm_up_steps={args.warm_up_steps}  grad_clip_norm={args.grad_clip_norm:g}")
     if wandb_keys:
         print(f"  wandb:    from {args.wandb_from} -> "
               + ", ".join(f"{k}={v!r}" for k, v in sorted(wandb_keys.items())))

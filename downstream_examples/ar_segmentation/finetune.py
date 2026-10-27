@@ -1,4 +1,5 @@
 import argparse
+import math
 import sys
 import os
 
@@ -129,7 +130,7 @@ def custom_collate_fn(batch):
     return collated_data, collated_metadata
 
 
-def evaluate_model(dataloader, epoch, model, device, run, criterion, step, threshold=0.5):
+def evaluate_model(dataloader, epoch, model, device, run, criterion, step, threshold=0.5)->dict:
     """Validate a binary segmentation model.
 
     Pixels are classified by thresholding sigmoid(logits) at ``threshold``, and
@@ -601,6 +602,49 @@ def get_dataloaders(config, scalers):
     return train_loader, valid_loader
 
 
+def build_lr_scheduler(optimizer, config, steps_per_epoch: int):
+    """Linear warmup then cosine decay, or ``None`` to leave the learning rate constant.
+
+    ``optimizer.warm_up_steps`` and ``optimizer.min_lr`` are present in every config here but
+    were never read, so the LR sat at ``learning_rate`` for every step of every run. At 168
+    steps per epoch that was survivable; at 2016 it was not. The 2016hr member's training BCE
+    stayed under 0.75 for all of epoch 0, then peaked at 930 in epoch 1 -- saturated wrong-sign
+    logits -- and never cleanly recovered: validation IoU went 0.5672 (epoch 0) -> 0.1086 ->
+    0.0793 -> 0.3656 -> 0.1071, with train and validation loss moving together the whole way,
+    so it was optimizer divergence rather than overfitting.
+
+    Opt-in via ``optimizer.lr_schedule`` so that configs omitting the key -- the 168hrs and
+    672hr ensembles, whose results have already been analysed -- keep the constant LR they ran
+    under and stay reproducible.
+    """
+    schedule = config["optimizer"].get("lr_schedule", "constant")
+    if schedule == "constant":
+        return None
+    if schedule != "cosine":
+        raise ValueError(
+            f"Unknown optimizer.lr_schedule {schedule!r}; expected 'constant' or 'cosine'."
+        )
+
+    base_lr = float(config["optimizer"]["learning_rate"])
+    min_lr = float(config["optimizer"].get("min_lr") or 0.0)
+    warm_up = int(config["optimizer"].get("warm_up_steps") or 0)
+    total = max(config["optimizer"]["max_epochs"] * steps_per_epoch, warm_up + 1)
+    floor = min_lr / base_lr
+
+    def lr_lambda(step: int) -> float:
+        if step < warm_up:
+            # step + 1 so the first step trains at a non-zero LR rather than being wasted.
+            return (step + 1) / warm_up
+        progress = min((step - warm_up) / max(total - warm_up, 1), 1.0)
+        return floor + (1.0 - floor) * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    print0(
+        f"LR schedule: linear warmup over {warm_up} steps to {base_lr:g}, then cosine down to "
+        f"{min_lr:g} across {total} total steps ({steps_per_epoch}/epoch)."
+    )
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
 def main(config, use_gpu: bool, use_wandb: bool, profile: bool):
 
     run = None
@@ -659,8 +703,19 @@ def main(config, use_gpu: bool, use_wandb: bool, profile: bool):
     optimizer = torch.optim.Adam(model.parameters(), lr=config["optimizer"]["learning_rate"])
     device = local_rank
 
+    # iters_per_epoch_train is only a break cap, so the real epoch length is whichever is
+    # smaller -- the scheduler has to be built against the number of steps actually taken.
+    steps_per_epoch = min(config["iters_per_epoch_train"], len(train_loader))
+    scheduler = build_lr_scheduler(optimizer, config, steps_per_epoch)
+
+    # Absent or 0 leaves gradients unclipped, which is what every run before this one did.
+    grad_clip_norm = config["optimizer"].get("grad_clip_norm")
+    if grad_clip_norm:
+        print0(f"Clipping gradients to max norm {grad_clip_norm}.")
+
     scaler = GradScaler()
     total_steps = 0
+    best_iou, best_epoch = float("-inf"), None
     print0(f"Starting training for {config['optimizer']['max_epochs']} epochs.")
     for epoch in range(config["optimizer"]["max_epochs"]):
         print0(f"Epoch {epoch} of {config['optimizer']['max_epochs']}")
@@ -683,8 +738,18 @@ def main(config, use_gpu: bool, use_wandb: bool, profile: bool):
                 loss = criterion(outputs, target)
 
             scaler.scale(loss).backward()
+
+            grad_norm = None
+            if grad_clip_norm:
+                # Unscale before clipping, or max_norm is compared against scaled gradients
+                # and never binds. scaler.step() below skips its own unscale once this ran.
+                scaler.unscale_(optimizer)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
+
             scaler.step(optimizer)
             scaler.update()
+            if scheduler is not None:
+                scheduler.step()
 
             # Reduce loss across all processes
             reduced_loss = loss.detach()
@@ -696,9 +761,18 @@ def main(config, use_gpu: bool, use_wandb: bool, profile: bool):
 
             # Print/log only from rank 0
             if i % config["wandb_log_train_after"] == 0 and distributed.is_main_process():
-                print0(f"Epoch: {epoch}, batch: {i}, loss: {reduced_loss.item()}")
-                # print0(f"Batch {i}, Loss: {reduced_loss.item()}")
-                log(run, {"train_loss": reduced_loss.item()}, step=total_steps)
+                train_metrics = {
+                    "train_loss": reduced_loss.item(),
+                    "lr": optimizer.param_groups[0]["lr"],
+                }
+                suffix = ""
+                if grad_norm is not None:
+                    # Pre-clip norm: the series that would have shown the 2016hr run going
+                    # unstable before the loss itself blew up.
+                    train_metrics["grad_norm"] = grad_norm.item()
+                    suffix = f", grad_norm: {train_metrics['grad_norm']:.3f}"
+                print0(f"Epoch: {epoch}, batch: {i}, loss: {reduced_loss.item()}{suffix}")
+                log(run, train_metrics, step=total_steps)
 
             if (i + 1) % config["save_wt_after_iter"] == 0:
                 print0(f"Reached save_wt_after_iter ({config['save_wt_after_iter']}).")
@@ -722,7 +796,24 @@ def main(config, use_gpu: bool, use_wandb: bool, profile: bool):
         save_model_singular(model, fp, parallelism=config["parallelism"])
         print0(f"Epoch {epoch}: Model saved at {fp}")
 
-        evaluate_model(valid_loader, epoch, model, rank, run, criterion, step=total_steps)
+        metrics = evaluate_model(valid_loader, epoch, model, rank, run, criterion, step=total_steps)
+
+        # Keep the best epoch by validation IoU. Without this the last epoch is the de-facto
+        # final model, and the 2016hr run showed that can be a diverged one: epoch 4 scored
+        # 0.1071 IoU against epoch 0's 0.5672. Every rank takes this branch together -- the
+        # metrics are all-reduced inside evaluate_model, and the ddp path of
+        # save_model_singular ends in dist.barrier().
+        iou = metrics["valid/iou"]
+        if iou == iou and iou > best_iou:  # iou != iou screens out the empty-mask NaN
+            best_iou, best_epoch = iou, epoch
+            best_fp = os.path.join(config["path_experiment"], "best.pth")
+            save_model_singular(model, best_fp, parallelism=config["parallelism"])
+            print0(f"Epoch {epoch}: new best IoU {iou:.4f}, saved at {best_fp}")
+        else:
+            print0(
+                f"Epoch {epoch}: IoU {iou:.4f} did not beat epoch {best_epoch} "
+                f"({best_iou:.4f}); best.pth left unchanged."
+            )
 
 
 if __name__ == "__main__":

@@ -42,3 +42,47 @@ These describe *active regions*, one row per HARP, not one row per frame. None a
 
 Both holdout_ar_large_* files share one schema, differing only in the trailing <split>_overlap_files column. Ranks are non-contiguous in both because rank is assigned over every AR in the era *before* the deproj/holdout filters — holdout_ar_large_from_test.csv starts at rank 2 because rank 1 (HARP 9475) is a polar limb region tagged deproj: Poor.
 
+Optimizer divergence in the 2016hr regime (2026-10-27)
+
+The first 2016hr member (boot01, run 2026-10-26, wandb f5ksovav, log /efs/bathomas/run_test_2016.log)
+diverged. It is neither over- nor undertrained: train and validation loss move together the whole
+way, so there is no overfitting gap, and the model had already learned the task after one epoch.
+
+epoch  train loss   val loss   val IoU   pred AR frac (true 0.0064)
+  0      0.0111      0.0088    0.5672    0.0074
+  1     10.01        0.8355    0.1086    0.0014
+  2      0.582       0.2782    0.0793    0.0006
+  3      0.0876      0.0414    0.3656    0.0057
+  4      1.292       1.2782    0.1071    0.0031
+
+Training BCE stayed under 0.75 for all of epoch 0, then exploded at epoch 1 batch ~685 to a peak
+of 930.25 -- saturated wrong-sign logits -- with 33 batches in that epoch over loss 5. Epochs 2-3
+partially recovered, epoch 4 blew up again (peak 134.75).
+
+Cause: finetune.py ran Adam at a constant lr 1e-3 with no warmup, no decay and no gradient
+clipping, at batch_size 1 against a 0.64%-positive target. optimizer.warm_up_steps and
+optimizer.min_lr were present in every config but never read by the code. Step count per epoch is
+what tipped it over -- the same lr 1e-3 was stable at 168 steps/epoch (val loss 0.012-0.016
+throughout, IoU climbing monotonically), spiky at 672 (run_672.log has an epoch at val loss 121.1,
+IoU 0.0000), and chronically divergent at 2016.
+
+Fixed in finetune.py by three opt-in optimizer config keys, so the 168hrs and 672hr configs keep
+the constant-LR behaviour their published results were produced under:
+  optimizer.lr_schedule     "constant" (default) | "cosine" -- warmup then cosine to min_lr
+  optimizer.warm_up_steps   now actually honored, under lr_schedule: cosine
+  optimizer.grad_clip_norm  max_norm for clip_grad_norm_; absent/0 disables (the old behaviour)
+finetune.py also now writes best.pth per member (best validation IoU) and logs lr and the pre-clip
+grad norm, which is the series that would have shown this coming before the loss blew up.
+
+The 2016hr configs were regenerated at lr 2e-4, cosine, 200 warmup steps, grad_clip_norm 1.0 --
+see the invocation in make_bootstrap_configs.py's docstring. Regenerating also fixed drift between
+members: boot01 had max_epochs 5 and path_experiment under /mnt/efs while boot02-10 had max_epochs
+3 and /efs, so the ten were not comparable. All ten now differ only in job_id, path_experiment and
+ar_index_train. Pre-regeneration copies are in configs_bootstrap/2016hr.pre-lrfix.20261027/.
+
+Checkpoint status: of /efs/bathomas/ar_seg_bootstrap/2016hr/boot01/epoch_{0..4}.pth, ONLY epoch_0
+is usable (IoU 0.5672). epoch_1 through epoch_4 are diverged and epoch_4 -- the one a "use the last
+epoch" convention would pick -- predicts less than half the AR area it should. There is no 2016hr
+entry in run_bootstrap_inference.py's BEST_EPOCH_BY_REGIME yet; add one only after a member trains
+cleanly under the new settings. Note that the 672hr comment in that table already recorded the same
+symptom ("most members then collapse hard") without naming the cause.
