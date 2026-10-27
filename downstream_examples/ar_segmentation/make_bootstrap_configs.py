@@ -59,8 +59,15 @@ to its own out-dir/experiment-root/job-id-prefix so the original 672hr set stays
         --job-id-prefix AR-seg_672hr_stable \\
         --valid-index ./assets/subsamples/ar_index_validation_1day.csv \\
         --test-index ./assets/subsamples/ar_index_leaky_validation_1day.csv \\
-        --max-epochs 10 \\
+        --max-epochs 6 \\
         --learning-rate 0.001 --lr-schedule cosine --warm-up-steps 70 --grad-clip-norm 1.0
+
+6 epochs, not 10: boot01 ran at 10 and its IoU plateaued over the last four epochs (0.5926 to
+0.6016, flat within noise) while valid/loss rose monotonically from epoch 4 -- so those epochs
+cost ~1.6 TB each and bought overfitting. Note this is not the same as stopping a 10-epoch run
+at 6: the cosine total is max_epochs x iters_per_epoch_train, so a 6-epoch config anneals to
+min_lr by epoch 6 rather than sitting near 3.5e-4 there. boot01's own 10-epoch configs are
+preserved under configs_bootstrap/672hr_stable.10ep.20261027/ since its results came from them.
 """
 
 import argparse
@@ -186,6 +193,14 @@ def main() -> None:
     p.add_argument("--grad-clip-norm", type=float, default=0.0,
                    help="optimizer.grad_clip_norm, the max_norm passed to clip_grad_norm_. "
                         "0 disables clipping, matching every run before this flag existed.")
+    p.add_argument("--best-metric", default="valid/iou",
+                   choices=["valid/iou", "valid/dice", "valid/loss"],
+                   help="optimizer.best_metric -- which validation metric best.pth tracks. "
+                        "IoU is the task metric and the default, but the two can disagree "
+                        "sharply: on 672hr_stable boot01, IoU peaked at epoch 8 while valid/loss "
+                        "bottomed out at epoch 0 and rose monotonically after epoch 4, so IoU "
+                        "selection picked one of that run's worst-calibrated checkpoints. Prefer "
+                        "valid/loss when the ensemble is being used for uncertainty estimates.")
 
     # Model capacity. The base config.yaml is rank-32/alpha-64 with no activation
     # checkpointing, which is tuned for a large GPU and a large training set. These defaults
@@ -267,6 +282,7 @@ def main() -> None:
         cfg["optimizer"]["lr_schedule"] = args.lr_schedule
         cfg["optimizer"]["warm_up_steps"] = args.warm_up_steps
         cfg["optimizer"]["grad_clip_norm"] = args.grad_clip_norm
+        cfg["optimizer"]["best_metric"] = args.best_metric
 
         # --- capacity / memory, and wandb destination ---
         cfg["model"]["lora_config"]["r"] = args.lora_r
@@ -310,7 +326,8 @@ def main() -> None:
           f"checkpoint_layers={ckpt_layers}")
     lr = args.learning_rate or base["optimizer"]["learning_rate"]
     print(f"  optim:    lr={lr:g}  schedule={args.lr_schedule}  "
-          f"warm_up_steps={args.warm_up_steps}  grad_clip_norm={args.grad_clip_norm:g}")
+          f"warm_up_steps={args.warm_up_steps}  grad_clip_norm={args.grad_clip_norm:g}  "
+          f"best_metric={args.best_metric}")
     if wandb_keys:
         print(f"  wandb:    from {args.wandb_from} -> "
               + ", ".join(f"{k}={v!r}" for k, v in sorted(wandb_keys.items())))
