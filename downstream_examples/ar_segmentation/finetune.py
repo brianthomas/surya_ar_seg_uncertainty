@@ -602,6 +602,17 @@ def get_dataloaders(config, scalers):
     return train_loader, valid_loader
 
 
+# Validation metrics best.pth may be selected on, and whether bigger or smaller wins.
+# Deliberately narrow: valid/pixel_accuracy is ~0.996 for an all-negative prediction at a 0.64%
+# positive rate, and precision or recall alone are each trivially gamed by predicting almost
+# nothing or almost everything, so none of the three is a sane selection criterion here.
+BEST_METRIC_MODES = {
+    "valid/iou": "max",
+    "valid/dice": "max",
+    "valid/loss": "min",
+}
+
+
 def build_lr_scheduler(optimizer, config, steps_per_epoch: int):
     """Linear warmup then cosine decay, or ``None`` to leave the learning rate constant.
 
@@ -713,9 +724,23 @@ def main(config, use_gpu: bool, use_wandb: bool, profile: bool):
     if grad_clip_norm:
         print0(f"Clipping gradients to max norm {grad_clip_norm}.")
 
+    # Which validation metric best.pth tracks. IoU is the default because it is the task metric,
+    # but it is not always the right one: on the 672hr_stable boot01 run IoU peaked at epoch 8
+    # while valid/loss bottomed out at epoch 0 and rose monotonically after epoch 4, so selecting
+    # on IoU picks one of that run's worst-calibrated checkpoints. For an ensemble whose purpose
+    # is uncertainty quantification, valid/loss is the defensible choice.
+    best_metric = config["optimizer"].get("best_metric", "valid/iou")
+    if best_metric not in BEST_METRIC_MODES:
+        raise ValueError(
+            f"Unknown optimizer.best_metric {best_metric!r}; expected one of "
+            f"{sorted(BEST_METRIC_MODES)}."
+        )
+    best_mode = BEST_METRIC_MODES[best_metric]
+    print0(f"Tracking best.pth by {best_metric} ({best_mode}).")
+
     scaler = GradScaler()
     total_steps = 0
-    best_iou, best_epoch = float("-inf"), None
+    best_score, best_epoch = None, None
     print0(f"Starting training for {config['optimizer']['max_epochs']} epochs.")
     for epoch in range(config["optimizer"]["max_epochs"]):
         print0(f"Epoch {epoch} of {config['optimizer']['max_epochs']}")
@@ -798,21 +823,27 @@ def main(config, use_gpu: bool, use_wandb: bool, profile: bool):
 
         metrics = evaluate_model(valid_loader, epoch, model, rank, run, criterion, step=total_steps)
 
-        # Keep the best epoch by validation IoU. Without this the last epoch is the de-facto
-        # final model, and the 2016hr run showed that can be a diverged one: epoch 4 scored
-        # 0.1071 IoU against epoch 0's 0.5672. Every rank takes this branch together -- the
-        # metrics are all-reduced inside evaluate_model, and the ddp path of
-        # save_model_singular ends in dist.barrier().
-        iou = metrics["valid/iou"]
-        if iou == iou and iou > best_iou:  # iou != iou screens out the empty-mask NaN
-            best_iou, best_epoch = iou, epoch
+        # Keep the best epoch by best_metric. Without this the last epoch is the de-facto final
+        # model, and the 2016hr run showed that can be a diverged one: epoch 4 scored 0.1071 IoU
+        # against epoch 0's 0.5672. Every rank takes this branch together -- the metrics are
+        # all-reduced inside evaluate_model, and the ddp path of save_model_singular ends in
+        # dist.barrier().
+        score = metrics[best_metric]
+        # score != score screens out the NaN evaluate_model returns for an all-empty denominator.
+        improved = score == score and (
+            best_score is None
+            or (score > best_score if best_mode == "max" else score < best_score)
+        )
+        if improved:
+            best_score, best_epoch = score, epoch
             best_fp = os.path.join(config["path_experiment"], "best.pth")
             save_model_singular(model, best_fp, parallelism=config["parallelism"])
-            print0(f"Epoch {epoch}: new best IoU {iou:.4f}, saved at {best_fp}")
+            print0(f"Epoch {epoch}: new best {best_metric} {score:.4f}, saved at {best_fp}")
         else:
+            best_str = "n/a" if best_score is None else f"{best_score:.4f}"
             print0(
-                f"Epoch {epoch}: IoU {iou:.4f} did not beat epoch {best_epoch} "
-                f"({best_iou:.4f}); best.pth left unchanged."
+                f"Epoch {epoch}: {best_metric} {score:.4f} did not beat epoch {best_epoch} "
+                f"({best_str}); best.pth left unchanged."
             )
 
 
