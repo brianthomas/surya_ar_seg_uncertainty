@@ -587,9 +587,16 @@ def get_dataloaders(config, scalers):
         collate_fn=custom_collate_fn,
     )
 
+    # The sampler's shuffle comes from its own generator (seed + epoch), not the global RNG,
+    # so the training order only varies if the seed is handed over explicitly. Default 0
+    # keeps the order every earlier run used. The validation sampler is left at the default:
+    # the loop evaluates a fixed iters_per_epoch_valid prefix of it, so reordering would
+    # change *which* frames are scored and break comparability across members.
+    seed = int(config.get("seed", 0))
+
     train_loader = DataLoader(
         dataset=train_dataset,
-        sampler=StatefulDistributedSampler(train_dataset, drop_last=True),
+        sampler=StatefulDistributedSampler(train_dataset, seed=seed, drop_last=True),
         **dl_kwargs,
     )
 
@@ -724,6 +731,11 @@ def main(config, use_gpu: bool, use_wandb: bool, profile: bool):
     if grad_clip_norm:
         print0(f"Clipping gradients to max norm {grad_clip_norm}.")
 
+    # Echoed so a log identifies its own arm without going back to the config: the seed
+    # ablation's whole point is that two runs differ in nothing else.
+    seed = int(config.get("seed", 0))
+    print0(f"Seed {seed} (torch/numpy/random {42 + seed}, train sampler {seed}).")
+
     # Which validation metric best.pth tracks. IoU is the default because it is the task metric,
     # but it is not always the right one: on the 672hr_stable boot01 run IoU peaked at epoch 8
     # while valid/loss bottomed out at epoch 0 and rose monotonically after epoch 4, so selecting
@@ -849,8 +861,6 @@ def main(config, use_gpu: bool, use_wandb: bool, profile: bool):
 
 if __name__ == "__main__":
 
-    set_global_seed(0)
-
     parser = argparse.ArgumentParser("Solar Wind Downstream baseline Training")
     parser.add_argument(
         "--config_path",
@@ -865,6 +875,20 @@ if __name__ == "__main__":
 
     config = yaml.safe_load(open(args.config_path, "r"))
     config["data"]["scalers"] = yaml.safe_load(open(config["data"]["scalers_path"], "r"))
+
+    # Seeding moved below the config read so `seed` can drive it; nothing between the old
+    # call site and here consumes randomness (argparse and two yaml loads), so an absent or
+    # 0 `seed` reproduces every run made before this key existed, bit for bit.
+    #
+    # set_global_seed offsets by 42 internally, so `seed: N` means torch/numpy/random seed
+    # 42+N. It covers LoRA's lora_A init and the lora_dropout masks, but NOT the training
+    # sample order: DistributedSampler shuffles from its own torch.Generator seeded with
+    # sampler_seed + epoch, untouched by the global RNG. get_dataloaders therefore hands
+    # `seed` to the train sampler too -- its default is already 0, so this is likewise a
+    # no-op at seed 0. Varying only the global seed would leave the data order identical
+    # across members and understate the optimization-path variance an ablation is after.
+    seed = int(config.get("seed", 0))
+    set_global_seed(seed)
 
     if config["dtype"] == "float16":
         config["dtype"] = torch.float16
