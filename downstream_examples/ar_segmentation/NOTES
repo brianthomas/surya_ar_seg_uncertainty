@@ -130,6 +130,15 @@ and would have produced gradients orders of magnitude above anything seen here. 
 it costs nothing and it is the only thing that would catch a genuine explosion -- but do not
 attribute the stability to it. If collapses ever recur, lowering learning_rate is the lever.
 
+AMENDED 2026-10-29, now that all ten members have run: "never needed to fire" was true of boot01
+but is not true of the ensemble. Over 8,100 logged batches, 4 of 10 members exceeded the clip --
+boot08 1.008 (batch 45), boot03 1.410 (b30), boot05 1.427 (b25), boot06 1.585 (b45) -- every one
+of them inside epoch 0's 70-step warmup ramp. Logging is every 5th batch, so the true count is
+unobserved and plausibly ~5x that. After epoch 0 the maximum over all members and all epochs is
+0.150, 6.7x below the threshold. So the conclusion survives in the part that matters -- the
+stability of epochs 1-5 cannot be credited to clipping, which is inert there -- but the clip is
+doing real work during warmup, and dropping it is no longer free.
+
 The replicate indices, evaluation indices, LoRA rank/alpha, workers and dtype are identical to
 the old 672hr set, and checkpoints go to .../ar_seg_bootstrap/672hr_stable/bootNN, so this is a
 clean A/B on stability alone.
@@ -200,3 +209,139 @@ config is NOT the same as stopping a 10-epoch run at 6 -- the cosine total is ma
 slightly better than this run's epoch 6 did. boot01 therefore needs re-running at 6 epochs before
 it joins members 2-10 in a BEST_EPOCH_BY_REGIME entry; mixing budgets is what made the old 672hr
 set (boot01 at 10, the rest at 5) hard to compare.
+
+672hr_stable full ensemble (2026-10-29, all 10 members at 6 epochs, L40S, 3.5-4.0 h each)
+
+Members, in wandb: boot01 j6huxcrn, boot02 s96wimmi, boot03 9ei4z7gv, boot04 vivfkjiv,
+boot05 wacgmsao, boot06 tcu7qblb, boot07 f76zjsdj, boot08 rkbzguhx, boot09 s9vokocg,
+boot10 bxx09je1. One clean sequential pass of run_bootstrap_ensemble_672hr_stable.sh, members
+1 to 10, ending "All 10 members complete." (run_bootstrap_ensemble_672hr_stable_rerun.log).
+
+PROVENANCE OF THE TWO EXTRA RUNS. k5gwnlfb (boot01, 10 epochs, the entry above) and 35u5h5xg
+(boot02) are NOT members. After k5gwnlfb's result came in, the 10-epoch pass was interrupted 365
+batches into boot02's epoch 0 at 21:19:07 and relaunched from member 1 at 21:23 under the 6-epoch
+configs. The SignalException traceback in run_bootstrap_ensemble_672hr_stable.log is signal 2 --
+that deliberate SIGINT, not a failure. 35u5h5xg wrote no checkpoint: boot02/ holds only
+epoch_0-5.pth, all timestamped after j6huxcrn finished.
+
+Mean over the ten members. Read from each run's .wandb datastore, not output.log, which rounds
+Avg Loss to 4 dp -- enough to tie boot03's epochs 2 and 3 at 0.0073 when full precision separates
+them 0.007265 vs 0.007322. The datastore lays each history item out as
+0x12 <len> <key> 0x82 0x01 <len> <value_json>.
+
+ep  train loss  val loss  val/train  val IoU          gnorm med  gnorm max
+ 0     0.02614   0.00991       0.38   0.5396+-0.0298      0.020      1.585
+ 1     0.00645   0.00896       1.39   0.5831+-0.0282      0.015      0.150
+ 2     0.00528   0.00881       1.67   0.6007+-0.0252      0.013      0.105   <- val loss floor
+ 3     0.00448   0.00882       1.97   0.6150+-0.0259      0.013      0.128
+ 4     0.00377   0.00904       2.40   0.6242+-0.0233      0.012      0.104   <- IoU plateau
+ 5     0.00334   0.00941       2.82   0.6254+-0.0250      0.010      0.123
+
+VERDICT: boot01's diagnosis generalizes to all ten, milder. NOT UNDERTRAINED -- IoU increments
+decay 0.0435, 0.0175, 0.0143, 0.0092, 0.0012, and the epoch 4 -> 5 gain fails a paired t-test
+(t(9)=0.67, 5/10 members improve) where 3 -> 4 passes (+0.0092, t=3.12). IoU saturates at epoch 4.
+k5gwnlfb's four extra epochs bought +0.001 IoU for +42% val loss, so nothing suggests a longer
+budget helps. MILDLY OVERTRAINED probabilistically -- mean val loss bottoms at epoch 2 and is
+significantly worse by epoch 5 (paired t(9)=3.17); per member the rise from its own floor is
++0.0% to +21.4%, mean +10.9%; train loss falls monotonically throughout and val/train climbs
+0.38 -> 2.82. Not divergence: see the clipping amendment above.
+
+THE HEADLINE IS THAT THE TWO SELECTION CRITERIA DISAGREE.
+  best valid/iou epoch   {ep3: 1, ep4: 4, ep5: 5}
+  min valid/loss epoch   {ep0: 1, ep1: 1, ep2: 4, ep3: 2, ep4: 1, ep5: 1}
+best.pth tracks valid/iou, so for 9 of 10 members it lands 2-3 epochs past that member's
+calibration optimum. boot07 is the lone exception: its val loss is still falling at epoch 5, so
+both criteria pick ep5 there. Selecting on min valid/loss instead costs 0.0168 mean validation
+IoU. Every epoch_N.pth is retained, so that re-selection needs no retraining -- the loss-optimal
+epochs are boot01 ep0, boot02 ep4, boot03 ep2, boot04 ep2, boot05 ep3, boot06 ep2, boot07 ep5,
+boot08 ep2, boot09 ep3, boot10 ep1.
+
+Per-member, IoU by epoch 0-5, with the selected epoch in parentheses:
+  boot01  .5595 .5744 .5624 .5854 .5971 .6006  (ep5)    boot06  .5593 .5803 .6104 .6117 .6177 .6178  (ep5)
+  boot02  .5112 .5480 .5593 .5771 .6018 .6015  (ep4)    boot07  .5631 .6226 .6245 .6441 .6483 .6597  (ep5)
+  boot03  .5312 .5582 .6279 .6491 .6538 .6574  (ep5)    boot08  .5265 .5488 .5880 .5958 .5968 .5964  (ep4)
+  boot04  .5595 .6142 .6223 .6166 .6374 .6452  (ep5)    boot09  .4851 .5760 .6018 .6011 .6170 .6162  (ep4)
+  boot05  .5821 .6208 .6203 .6481 .6573 .6500  (ep4)    boot10  .5190 .5879 .5898 .6208 .6147 .6091  (ep3)
+
+Selected-epoch IoU spans 0.5968-0.6597, mean 0.6274, sd 0.0252 -- 21x the epoch 4 -> 5 gain and
+12x the mean best-minus-final gap of 0.0020. Which replicate you trained on matters far more than
+which epoch you stop at. That is the right behaviour for a bootstrap, but see the seed-ablation
+entry below for what that spread leaves out.
+
+A SYSTEMATIC BIAS WORTH TRACKING: at the selected epoch, recall exceeds precision in 9 of 10
+members (means 0.796 vs 0.748) and predicted AR area runs ~7% above truth (ratio 0.98-1.14). The
+ensemble over-segments. This is bias, not variance, so no amount of member spread will expose it
+and no epoch re-selection will remove it -- relevant to the 2.28x error/uncertainty ratio, since
+members that all over-segment by 7% agree with each other and all differ from truth.
+
+Against the earlier regimes, on the same 200-frame validation set:
+                     members   best-epoch IoU     last-epoch IoU     val loss floor -> last
+  168hrs (10 ep)        9      0.5110+-0.0239     0.4926+-0.0339     +23%
+  672hr (5 ep)          9      0.5902+-0.0394     0.3335+-0.2076     -> 13.6  (diverged)
+  672hr_stable (6 ep)  10      0.6274+-0.0252     0.6254+-0.0250     +10.7%
+First regime where no member collapses: every run's last epoch is within 0.012 IoU of its own
+peak, so "best epoch" barely selects at all. Also the highest-scoring and tightest-spread.
+
+Three footnotes on that table. The val loss column is a ratio of ensemble means, not a mean of
+per-member ratios -- the two differ, cf. the +10.9% above. The 168hrs and 672hr rows are
+log-derived at 4 dp, so +23% is good to about half a point. And both earlier rows hold nine
+members, not ten, for different reasons: 672hr boot01 (nb9lm7a4) ran 10 epochs against the
+others' 5, a non-comparable budget; 168hrs boot01 (b919pvy1) ran 20 and predates the per-regime
+config directories -- its --config_path is the flat ./configs_bootstrap/config_boot01.yaml -- so
+it does not group with the rest by path either. Both are in BEST_EPOCH_BY_REGIME regardless,
+where only the peak epoch matters.
+
+WHAT THE VALIDATION SET CANNOT TELL US. 200 frames over 9 days (Jan 15 of 2011-2019),
+day-disjoint from every replicate -- no leakage, verified -- but small, heavily autocorrelated
+(hourly frames within 9 solar configurations), and also the epoch-selection set, so 0.6254 is
+selection-biased, if only mildly (mean best-minus-final 0.0020). Generalization proper still
+needs the holdout cohort; the line above about BEST_EPOCH_BY_REGIME therefore still stands, and
+no 672hr_stable holdout inference has been run.
+
+HOUSEKEEPING DONE. boot01/ held epoch_6-9.pth from k5gwnlfb (6720-step cosine) alongside
+epoch_0-5.pth from j6huxcrn (4032-step cosine) -- 19 GB against 12 GB for every other member, and
+a live hazard for anything selecting by epoch number. Moved to boot01/stale_10ep_k5gwnlfb/ with a
+README recording k5gwnlfb's per-epoch IoU.
+
+Seed ablation: the variance component none of these ensembles sample (set up 2026-10-29)
+
+make_seed_ablation_configs.py + configs_bootstrap/seed_ablation/ + run_seed_ablation.sh, with the
+design and caveats in configs_bootstrap/seed_ablation/README.md. Generated, NOT yet run.
+
+Why: model uncertainty splits into a finite-sample component (which training draw you got) and an
+optimization-path component (which basin SGD found). The bootstrap ensembles vary the first and
+hold the second fixed -- all ten 672hr_stable members share one seed, hence one LoRA init and one
+training-sample order -- so member spread omits the second entirely. Together with the
+overfitting above that is two independent reasons the spread understates error, and only the
+overfitting one is addressable by re-selecting epochs. This ablation sizes the other.
+
+Design: one replicate (train_boot001.csv), seeds 0/1/2, derived from
+configs_bootstrap/672hr_stable/config_boot01.yaml so each arm differs from boot01 in exactly
+{seed, job_id, path_experiment} by construction rather than by re-deriving a field list.
+
+TWO FACTS THAT SHAPED IT, both verified:
+  * seed 0 is a bit-for-bit no-op -- set_global_seed(0) is manual_seed(42), and the sampler's
+    default seed is already 0 -- so 672hr_stable/boot01 IS the seed-0 arm. Only seeds 1 and 2
+    need training, ~3.7 h each. config_seed00.yaml is generated anyway so the claim is checkable;
+    run_seed_ablation.sh skips it.
+  * the global seed does NOT reach the data order. DistributedSampler shuffles from a private
+    torch.Generator seeded with sampler_seed + epoch, untouched by the global RNG, so
+    set_global_seed moves only lora_A's init and the dropout masks. finetune.py now hands `seed`
+    to the train sampler as well (commit b47cb54). Varying only the global seed would have left
+    the sample order identical across arms and understated the very thing being measured.
+The validation sampler is deliberately left unseeded: the loop scores a fixed
+iters_per_epoch_valid prefix of it, so reseeding would change which frames are scored and break
+comparability with all 30 existing members. Related: finetune.py never calls sampler.set_epoch(),
+so every epoch within a run iterates in the same order. Left alone on purpose -- changing it
+would alter training dynamics and break that same comparability.
+
+Reading it: compare the across-seed sd of validation IoU against the across-replicate sd of
+0.0252 above. Much smaller means the existing ensemble already captures nearly all the variance
+and the 2.28x gap is mostly bias; comparable means the ensemble is missing roughly half the
+variance and a crossed seeds x replicates grid is warranted. n=3 puts an sd on 2 df, 95% CI
+~0.52x-3.7x, so this detects an order-of-magnitude difference and not a factor of 1.5 -- add
+seeds rather than conclude if it lands borderline. The design is L-shaped, not crossed: ten
+replicates at one seed plus three seeds at one replicate share the single cell (boot01, seed 0),
+which supports comparing marginal variances but not an interaction term. And neither component
+sees bias: all arms share the frozen surya.366m.v1.pt, so common-mode error in that
+representation is invisible to every spread estimator here.
