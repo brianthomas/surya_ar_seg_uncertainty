@@ -37,6 +37,19 @@ validation sampler is deliberately left at its default: the loop scores a fixed
 iters_per_epoch_valid prefix, so reseeding it would change which frames are scored and break
 comparability with every existing member.
 
+NAMING: the arms are `672hr_stable_seed`, after the parent regime they reseed. Everything --
+the config directory, the checkpoint root under ar_seg_bootstrap/, the job_id prefix and
+run_bootstrap_inference's regime key -- uses that name, so the regime naming convention
+resolves all three roots with no explicit flags.
+
+ONE PROVENANCE WRINKLE from that rename (2026-10-30): the three arms that ACTUALLY TRAINED did
+so before it, under the old `seed_ablation` / `AR-seg_seedabl` names, so their wandb runs log
+job_id `AR-seg_seedabl_seed{00,01,02}` while a fresh run of this script emits
+`AR-seg_672hr_stable_seed_seed{00,01,02}`. The checkpoints and results are unaffected -- job_id
+is a label -- but do not expect a regenerated config to match the completed runs byte for byte
+on that one key. The runs are bm06c9dt (seed01), x7m7u8fz (seed02) and j6huxcrn (seed00, which
+is 672hr_stable/boot01); see NOTES.
+
 Usage:
     python make_seed_ablation_configs.py                  # seeds 0,1,2
     python make_seed_ablation_configs.py --seeds 0 1 2 3  # a wider sweep
@@ -121,10 +134,20 @@ def main() -> None:
         help="Config every arm is derived from. Its replicate is the one held fixed.",
     )
     p.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
-    p.add_argument("--out-dir", default="./configs_bootstrap/seed_ablation")
+    # Named 672hr_stable_seed, after the parent regime whose recipe and replicate these
+    # arms reseed, so that run_bootstrap_inference.regime_defaults() resolves all three
+    # roots by convention instead of needing explicit --*_root flags.
+    p.add_argument("--out-dir", default="./configs_bootstrap/672hr_stable_seed")
     p.add_argument("--runner", default="./run_seed_ablation.sh")
-    p.add_argument("--experiment-root", default="/mnt/efs/bathomas/ar_seg_seed_ablation")
-    p.add_argument("--job-id-prefix", default="AR-seg_seedabl")
+    p.add_argument(
+        "--experiment-root",
+        default="/mnt/efs/bathomas/ar_seg_bootstrap/672hr_stable_seed",
+        help=(
+            "Where arm checkpoints land. Sits INSIDE ar_seg_bootstrap/ beside the "
+            "672hr_stable members so the regime naming convention resolves it."
+        ),
+    )
+    p.add_argument("--job-id-prefix", default="AR-seg_672hr_stable_seed")
     p.add_argument(
         "--include-seed-0",
         action="store_true",
