@@ -279,14 +279,27 @@ per-member ranking with Kendall's *W*, a one-way random-effects split of the per
 into between-frame and between-member variance, the exact pooled boundary-distance ECDF and
 reliability curve, and three exemplar ARs.
 
+`view_holdout_nonflaring30_sections67_672hr_stable.ipynb` is the same analysis for the
+stabilized ensemble (`--regime 672hr_stable`, output root
+`672hr_stable_infer_holdout_nonflaring30`), and additionally **pairs every quantity against the
+`672hr` run AR by AR** -- the 30 ARs are identical in both, so each comparison is a Wilcoxon
+signed-rank test on per-AR differences rather than two cohort means. The between-frame sd of
+the error/uncertainty ratio is 1.31, far larger than any shift between training regimes, so the
+pairing is what makes the comparison resolvable at all. §1 asserts the pairing is real by
+checking that each AR's ground-truth positive fraction -- a property of the masks alone -- is
+bit-identical between the two runs.
+
 Disk: 15.7 GB of input cubes plus ~23 GB of inference output (`channels.nc` is 436 MB per
 frame and is only needed for the exemplar figures). Both live on EFS.
 
 Three things worth knowing before reading the output:
 
 * **`--regime` selects the ensemble.** Everything above is parameterized the same way
-  `run_bootstrap_inference.py` is, so the `168hrs` cohort is the same three commands with one
-  flag changed. `2016hr` is not reachable until it has an entry in `BEST_EPOCH_BY_REGIME`.
+  `run_bootstrap_inference.py` is, so the `168hrs` and `672hr_stable` cohorts are the same three
+  commands with one flag changed. `2016hr` is not reachable until it has an entry in
+  `BEST_EPOCH_BY_REGIME`. Note that `--regime` is a free-form string to
+  `analyze_holdout_sections67.py` (it is only recorded in the cache attrs), but
+  `run_bootstrap_inference.py` gates it on that table's keys.
 * **The analysis script never imports torch.** Each member's epoch and validation IoU come
   from the `prob_*.nc` attributes, which record what actually ran; `--check-best-epoch`
   cross-checks them against `BEST_EPOCH_BY_REGIME` and is the only path that pulls in the

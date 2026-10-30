@@ -144,16 +144,18 @@ the old 672hr set, and checkpoints go to .../ar_seg_bootstrap/672hr_stable/bootN
 clean A/B on stability alone.
 
 run_bootstrap_inference.py's regime_defaults() already resolves "672hr_stable" correctly by
-naming convention, but --regime is gated on BEST_EPOCH_BY_REGIME's keys, so inference will
-refuse the regime until a real entry is added from the run's output.log.
+naming convention, and --regime is gated on BEST_EPOCH_BY_REGIME's keys; the entry was added
+2026-10-29 from the rerun log (see the holdout-inference section below).
 
 Cost: 672 samples x ~590 MB = ~396 GB/epoch, ~4.0 TB/member, ~40 TB for all 10 at 10 epochs.
 Regenerate with --max-epochs 5 for the ~20 TB version.
 
-CAVEAT: if this ensemble supersedes the old 672hr one, the sections 6/7 analysis (ICC, reliability,
-the 2.28x error/uncertainty ratio, "member diversity is lost") has to be redone. Some of those
-conclusions may be artifacts of members collapsing at different random epochs rather than real
-consequences of 4x the training data.
+CAVEAT (RESOLVED 2026-10-29 -- see "672hr_stable holdout inference" below): if this ensemble
+supersedes the old 672hr one, the sections 6/7 analysis (ICC, reliability, the 2.28x
+error/uncertainty ratio, "member diversity is lost") has to be redone. Some of those conclusions
+may be artifacts of members collapsing at different random epochs rather than real consequences of
+4x the training data. Verdict: they are not. Ratio 2.55 vs 2.28 (paired p 0.58) and ICC 0.187 vs
+0.192 both survive with no collapsed members; the consistent under-confidence does not.
 
 672hr_stable boot01 result (2026-10-27, wandb k5gwnlfb, L40S, 6h21m for 10 epochs)
 
@@ -294,19 +296,184 @@ where only the peak epoch matters.
 WHAT THE VALIDATION SET CANNOT TELL US. 200 frames over 9 days (Jan 15 of 2011-2019),
 day-disjoint from every replicate -- no leakage, verified -- but small, heavily autocorrelated
 (hourly frames within 9 solar configurations), and also the epoch-selection set, so 0.6254 is
-selection-biased, if only mildly (mean best-minus-final 0.0020). Generalization proper still
-needs the holdout cohort; the line above about BEST_EPOCH_BY_REGIME therefore still stands, and
-no 672hr_stable holdout inference has been run.
+selection-biased, if only mildly (mean best-minus-final 0.0020). Generalization proper needs the
+holdout cohort -- run 2026-10-29, next section.
 
 HOUSEKEEPING DONE. boot01/ held epoch_6-9.pth from k5gwnlfb (6720-step cosine) alongside
 epoch_0-5.pth from j6huxcrn (4032-step cosine) -- 19 GB against 12 GB for every other member, and
 a live hazard for anything selecting by epoch number. Moved to boot01/stale_10ep_k5gwnlfb/ with a
 README recording k5gwnlfb's per-epoch IoU.
 
-Seed ablation: the variance component none of these ensembles sample (set up 2026-10-29)
+672hr_stable holdout inference + sections 6/7 (2026-10-29)
+
+view_holdout_nonflaring30_sections67_672hr_stable.ipynb, over the same 30 non-flaring test-era ARs
+as the 672hr run, so every comparison below is PAIRED per AR (Wilcoxon signed-rank on the
+differences). The between-frame sd of the ratio is 1.3 in both runs, far larger than any shift
+between regimes, so unpaired cohort means would resolve nothing. The notebook asserts the pairing
+by checking each AR's ground-truth positive fraction -- a property of the masks alone -- is
+bit-identical across the two runs; max |difference| is exactly 0.
+
+Provenance: BEST_EPOCH_BY_REGIME["672hr_stable"] added from the 60 "Validation -- IoU:" lines of
+run_bootstrap_ensemble_672hr_stable_rerun.log (ep5/4/5/5/4/5/5/4/4/3 for boot01-10); 300 inferences
+on a T4 in ~60 min into .../672hr_stable_infer_holdout_nonflaring30, resuming a partial pass that
+had already written all 30 channels.nc + prob_boot01 and 24 prob_boot02, so that root's
+prob attrs carry a RELATIVE source_file ("./assets/holdout_nc_nonflaring30/...") -- the analysis
+script's plate_scale() reads it, so analyze_holdout_sections67.py must be run from
+downstream_examples/ar_segmentation/ for this root. --check-best-epoch reported no mismatches, no
+frame failed the fp16 mean-is-a-mean check, and no member predicted an empty mask.
+
+                          672hr_stable      672hr    paired p   note
+  error / uncertainty     2.55 +- 1.39   2.28 +- 1.31   0.58    median delta -0.01, 15/30 improved
+  cohort mean-ERR/mean-UNC       2.50x          1.79x     --    UNC's tail shrank, ERR did not
+  UNCERTAINTY ASSD (px)           9.73          13.97    0.10    median delta only -0.40 px
+  ERROR ASSD (px)                24.32          24.96    0.080   error HD95 166.6 vs 166.5
+  soft-mean IoU                 0.7407         0.7115   2.6e-07  up on 29/30
+  soft recall                   0.8305         0.7904   3.7e-09  precision -0.0065 (p 0.070)
+  ICC (frame identity)           0.187          0.192     --     sigma_b 4.62 vs 16.51
+  Kendall's W                    0.104          0.331     --     Friedman p 8.9e-04
+  Method A vs B, Pearson r       0.386          0.053     --     p 0.035 vs 0.78
+  pooled bias (p-bar - obs)    -0.0069        -0.0311     --     per-AR +0.0021, 17 under/13 over
+  pooled ECE                    0.0138         0.0317     --     per-AR 0.0585 vs 0.0604 (p 0.37)
+  Brier, per AR                 0.1168         0.1230    0.003   better on 23/30
+  missed AR fraction            0.0629         0.0682    0.011   k=0 still hides 6.3 +- 2.0 %
+
+FOUR THINGS THIS SETTLES.
+
+1. The 2.28x was NOT an artifact of collapsed members. Paired p 0.58, median per-AR change -0.01.
+   Every detection failure is gone -- 4 of 300 member-frames exceeded 100 px ASSD in the old run
+   (max 434.8), 0 of 300 do now (max 97.9) -- and the spread is still only half the error.
+
+2. The ICC prediction in this file was WRONG. The earlier entry read 0.192 as "driven by the heavy
+   tail of those three members, not by uniform scatter", which predicts a higher ICC once they are
+   gone. Both variance components fell ~3.5x and the ratio did not move (0.187). The 81% members /
+   19% frame-identity split is a real property of bootstrapping this model.
+
+3. The IoU gain does NOT reach the boundary. +0.0292 IoU on 29/30 ARs (p 2.6e-07), driven by recall
+   (+0.0401) with precision slightly down -- the over-segmentation this file flagged at training
+   time, confirmed on holdout -- while ERR and error HD95 do not move. Pixel overlap and boundary
+   localization are different axes. Tightening UNC 30% while ERR stands still makes the error bar
+   WORSE, which is why the cohort-level ratio rose 1.79x -> 2.50x.
+
+4. The probability-saturation prediction in this file was RIGHT, and it helped. Mean p-bar rose on
+   30/30 ARs (+0.0546, p 1.9e-09), exactly as predicted for best.pth checkpoints 2-3 epochs past
+   their validation-loss optimum. But the old ensemble was UNDER-confident, so the extra confidence
+   landed on the diagonal: pooled bias -0.0311 -> -0.0069, Murphy reliability 0.0015 -> 0.0004.
+   The cost is that the sign consistency is gone (17 under / 13 over, Wilcoxon p 0.52, against
+   23/30 at p 1.5e-3), so the old notebook's "threshold below 0.5" recommendation NO LONGER HOLDS.
+   Per-AR |bias| and ECE improvements are not significant (p 0.16, p 0.37); Brier's is.
+
+ONE NEW RESULT the old cohort could not produce: pairing each member against ITS OWN replicate
+across the two optimizer schedules gives Spearman +0.733 (p 0.016) on mean ASSD. A replicate that
+yielded a loose member yields a loose one again when retrained. Replicate identity transfers;
+per-frame member ranking does not (W 0.104). The old W of 0.331 was mostly three broken
+checkpoints being reliably bad.
+
+WATCH OUT FOR ONE FRAME. 20200607_0100 (HARP 7419) has truth_frac 0.0012 -- 0.19x the training-era
+rate, 17x sparser than the cohort median -- and carries the worst bias (+0.2648), Brier (0.2035)
+and ECE (0.2651) of the 30. It is the only frame whose truth mask is nearly empty while the
+ensemble still calls 1.0% of the disk an AR, and it single-handedly pulls the per-AR mean bias
+positive. Read medians for calibration on this cohort.
+
+NOT DONE, in priority order: (a) re-run this cohort at each member's MIN-VAL-LOSS epoch
+(boot01 ep0, boot02 ep4, boot03 ep2, boot04 ep2, boot05 ep3, boot06 ep2, boot07 ep5, boot08 ep2,
+boot09 ep3, boot10 ep1) into the already-created
+.../672hr_stable_minloss_infer_holdout_nonflaring30 -- the direct test of point 4, ~60 min T4, no
+retraining since every epoch_N.pth is kept; (b) HARP 11930 under 672hr_stable, so the single-frame
+reference markers in the notebooks stop being cross-regime (3 frames, ~8 min); (c) the 168hrs
+cohort, one --regime flag.
+
+Seed ablation: the variance component none of these ensembles sample (run 2026-10-29/30)
 
 make_seed_ablation_configs.py + configs_bootstrap/seed_ablation/ + run_seed_ablation.sh, with the
-design and caveats in configs_bootstrap/seed_ablation/README.md. Generated, NOT yet run.
+design and caveats in configs_bootstrap/seed_ablation/README.md. RUN AND ANSWERED. Both arms
+completed 6 epochs on replicate train_boot001.csv -- seed01 = bm06c9dt, seed02 = x7m7u8fz -- and
+both printed the "Seed N (torch/numpy/random 42+N, train sampler N)" line, so commit b47cb54's
+plumbing worked. seed00 is 672hr_stable/boot01 (j6huxcrn) by design, not a re-run; all three
+configs under configs_bootstrap/seed_ablation/ name the same ar_index_train, verified.
+
+ONE EARLIER RUN IS NOT AN ARM. re5vbc9l (13:55) printed "Clipping gradients" but NO Seed line --
+the training box was still on a pre-seed finetune.py -- and was killed with KeyboardInterrupt. It
+logged zero validations and wrote no checkpoint. grep -c 'Validation --' is 6 / 6 / 0 for
+bm06c9dt / x7m7u8fz / re5vbc9l.
+
+Every number below is re-derived from the .wandb datastores rather than output.log, which rounds
+loss to 4 dp, and cross-checked against each run's six "Validation -- IoU:" lines; all 13 runs
+used here (3 arms + 10 replicates) agree exactly. best.pth mtimes independently confirm each
+selection: seed01's (18:15) follows epoch_5.pth (18:09), seed02's (20:19) falls between
+epoch_2.pth (20:11) and epoch_3.pth (20:53).
+
+THE QUESTION THIS WAS BUILT TO ANSWER, ANSWERED: NO, THE FIXED SEED IS NOT WHY THE ENSEMBLE
+SPREAD UNDERSTATES ERROR.
+
+  ep   across-seed sd   across-replicate sd   seed var share   sd ratio
+   0      0.00828             0.02979              7.2%          0.278
+   1      0.01062             0.02816             12.4%          0.377
+   2      0.02162             0.02519             42.4%          0.858   <- seed spread peaks
+   3      0.00530             0.02587              4.0%          0.205
+   4      0.00725             0.02333              8.8%          0.311
+   5      0.00161             0.02501              0.4%          0.064   <- arms converge
+
+Pooling that across epochs is the whole ballgame, and the three defensible choices disagree:
+
+                        seed sd          rep sd        sd ratio   seed var share
+  ep0-5 (all)        0.01105 (df 12)  0.02631 (df 54)    0.420        15.0%
+  ep3-5 (deployed)   0.00527 (df  6)  0.02476 (df 27)    0.213         4.3%
+  ep0-2              0.01471 (df  6)  0.02778 (df 27)    0.529        21.9%
+
+ep3-5 IS THE RIGHT ESTIMAND. The ten replicates' selected epochs are ep3-5 (ep3: 1, ep4: 4,
+ep5: 5), so that is the range members are actually deployed from. ep0-2 mixes in under-trained
+checkpoints nobody deploys and inflates the seed share to 21.9%; pooling all six epochs splits
+the difference at 15.0% for the same reason. Both are averaging over TRAINING STAGES, not over
+seeds -- an early-epoch checkpoint is more seed-sensitive because it has had less time to
+converge, which is a fact about epoch 0, not about the ensemble that ships.
+
+THE ARITHMETIC, and it is not close. If the two components are independent the total sd is
+sqrt(sd_seed^2 + sd_rep^2), so adding the seed component inflates the recorded across-replicate
+spread by a factor that then divides the error/uncertainty ratio (exact for the cohort-level
+mean-ERR/mean-UNC, which scales inversely with UNC while ERR is untouched):
+  point estimate  sd_seed 0.00527 -> inflate 1.0224x -> 2.55x becomes 2.49x
+  95% upper bound sd_seed 0.01010 -> inflate 1.0799x -> 2.55x becomes 2.36x
+(one-sided 95%, chi2 on 6 df, seed var share 14.2%; the two-sided 0.025 bound of 0.01161 gives
+2.31x). Even at the upper bound, seed diversity moves a 2.55x gap to 2.36x. It cannot close it.
+
+THE SHARPER FINDING UNDERNEATH: DIFFERENT SEEDS CONVERGE, DIFFERENT REPLICATES DO NOT.
+  seed00  .5595 .5744 .5624 .5854 .5971 .6006
+  seed01  .5431 .5832 .5790 .5894 .5982 .6004
+  seed02  .5495 .5956 .6053 .5959 .5851 .5977
+At epoch 5 the three arms sit at 0.6006 / 0.6004 / 0.5977, sd 0.00161, while the ten replicates
+span 0.0633 (0.5964-0.6597, sd 0.02501) -- a 0.41% variance share, F = 241 on (9,2) df. The
+training-loss curves are nearly indistinguishable too: epoch_loss max/min - 1 runs +1.8%, +5.3%,
++2.0%, +1.1%, +2.3%, +1.5% over epochs 0-5, i.e. within 2.4% at five of six epochs, despite a
+different LoRA init AND a different sample order.
+
+But they DIVERGE MID-RUN. Across-seed sd peaks at 0.0216 at epoch 2 -- 0.858 of the replicate sd
+there, essentially replicate-level -- and seed02 peaks early (0.6053 at ep2), dips to 0.5851, and
+recovers to 0.5977. The seed moves the PATH, not the DESTINATION. That is what a rank-8 adapter
+perturbing 0.51% of parameters around one frozen pretrained point should do, and it
+retroactively VALIDATES fixing the seed for the bootstrap -- the choice this ablation existed to
+question. It also means a seed-diverse ensemble would have to be stopped mid-run to buy any
+diversity at all, at exactly the epochs with the worst IoU.
+
+TWO STANDING CLAIMS IN THIS FILE GET SEED-INDEPENDENT CONFIRMATION.
+  * OVER-SEGMENTATION IS STRUCTURAL. At epoch 5 the pred/true AR area ratio is 1.100 / 1.119 /
+    1.102 and recall exceeds precision in 3/3 arms, matching 9/10 replicates (at each arm's own
+    selected epoch: 1.100 / 1.119 / 1.078, recall > precision 3/3). It survives resampling on
+    BOTH axes, so no ensembling scheme over either can expose it. This is the strongest support
+    available for point 3 above -- that the remaining gap is bias. NB these ratios are
+    full-precision; the log's 4-dp AR-fraction field reads them as 1.109 / 1.125 / 1.109, so the
+    ~7%-above-truth figure quoted earlier in this file is a 4-dp artifact of the same kind.
+  * THE OVERFITTING IS NOT AN ARTIFACT OF SEED 42, and is worse without it. Validation loss
+    floors at ep0 / ep1 / ep2 and rises +14.2% / +27.3% / +34.7% to ep5.
+
+Also: seed01 put one epoch-0 batch at grad norm 1.8882, making it a FIFTH run on this recipe to
+engage the 1.0 clip during warmup (4 of 10 672hr_stable members did), further supporting the
+clipping amendment above. seed00 and seed02 top out at 0.5696 and 0.9219 and never engage it.
+
+AND A CAUTIONARY ONE. seed02's best.pth is epoch 2, chosen over its own epoch 5 by 0.0076 IoU
+(0.6053 vs 0.5977). On a 200-frame validation set that is selection noise. It is the cleanest
+illustration in this repo of why IoU-based epoch picking is fragile: the same recipe, perturbed
+only in its seed, hands best.pth a mid-run checkpoint whose advantage would not survive a
+different validation draw. Both other arms pick ep5.
 
 Why: model uncertainty splits into a finite-sample component (which training draw you got) and an
 optimization-path component (which basin SGD found). The bootstrap ensembles vary the first and

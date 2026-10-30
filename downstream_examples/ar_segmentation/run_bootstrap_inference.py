@@ -19,11 +19,20 @@ rather than one:
   * It is resumable. Existing outputs are skipped, so an interrupted run resumes
     where it stopped.
 
-Two training regimes exist, selected by `--regime`: `168hrs` (168-sample, one-week
-bootstrap replicates) and `672hr` (672-sample, one-month replicates). They differ only
-in how much data each member saw -- same LoRA geometry, same backbone, same validation
-set -- so the regime picks the weights/config/output roots and the best-epoch table and
-changes nothing else.
+Three bootstrap regimes exist, selected by `--regime`: `168hrs` (168-sample, one-week
+bootstrap replicates), `672hr` (672-sample, one-month replicates) and `672hr_stable`
+(the same 672-sample replicates retrained with warmup + cosine decay + gradient
+clipping, so no member collapses after its peak). They differ only in how much data each
+member saw and how it was optimized -- same LoRA geometry, same backbone, same
+validation set -- so the regime picks the weights/config/output roots and the best-epoch
+table and changes nothing else.
+
+A fourth key, `672hr_stable_seed`, is NOT a bootstrap: its three "members" are seed arms
+on one shared replicate (672hr_stable's boot01), so member spread there measures the
+optimization-path component of model uncertainty rather than the finite-sample one. It is
+named after its parent regime because that is exactly what it is -- 672hr_stable's recipe
+and replicate, reseeded -- and the name keeps it adjacent to `672hr_stable` on disk and
+in this table. It follows the standard naming convention, so no --*_root flags are needed.
 
 Example:
     PYTHONPATH=<repo root> python run_bootstrap_inference.py \
@@ -32,6 +41,11 @@ Example:
     PYTHONPATH=<repo root> python run_bootstrap_inference.py --regime 672hr \
         --nc_dir /efs/bathomas/assets/holdout_nc_11930 \
         --output_root /efs/bathomas/ar_seg_bootstrap/672hr_infer_holdout_top3
+
+    PYTHONPATH=<repo root> python run_bootstrap_inference.py --regime 672hr_stable_seed \
+        --nc_dir ./assets/holdout_nc_nonflaring30 \
+        --output_root \
+          /efs/bathomas/ar_seg_bootstrap/672hr_stable_seed_infer_holdout_nonflaring30
 """
 
 import argparse
@@ -96,6 +110,54 @@ BEST_EPOCH_BY_REGIME = {
         "boot09": (1, 0.5621, "6xowxfq6"),
         "boot10": (2, 0.5699, "0c76ze9m"),
     },
+    # Derived 2026-10-29 from the 60 "Validation -- IoU:" lines of
+    # /efs/bathomas/run_bootstrap_ensemble_672hr_stable_rerun.log, one clean sequential
+    # pass of all ten members at 6 epochs (warmup 70 + cosine + grad_clip_norm 1.0).
+    #
+    # Unlike 672hr, no member collapses: every run's last epoch is within 0.012 IoU of its
+    # own peak, so "best epoch" barely selects here (mean best-minus-final 0.0020) and the
+    # table is far less load-bearing than it is above. Peaks land at epoch 3-5 rather than
+    # 0-3, because the stabilized LR schedule keeps improving instead of blowing up.
+    #
+    # Two other 672hr_stable runs are in /efs/bathomas/wandb and NEITHER is a member:
+    # k5gwnlfb is the 10-epoch boot01 pilot, whose epoch_6-9.pth are quarantined under
+    # boot01/stale_10ep_k5gwnlfb/ (a 6720-step cosine, not comparable to these 4032-step
+    # ones); 35u5h5xg is a boot02 start that was SIGINT-ed 365 batches into epoch 0 and
+    # wrote no checkpoint at all. See NOTES, "672hr_stable full ensemble".
+    "672hr_stable": {
+        "boot01": (5, 0.6006, "j6huxcrn"),
+        "boot02": (4, 0.6018, "s96wimmi"),
+        "boot03": (5, 0.6574, "9ei4z7gv"),
+        "boot04": (5, 0.6452, "vivfkjiv"),
+        "boot05": (4, 0.6573, "wacgmsao"),
+        "boot06": (5, 0.6178, "tcu7qblb"),
+        "boot07": (5, 0.6597, "f76zjsdj"),
+        "boot08": (4, 0.5968, "rkbzguhx"),
+        "boot09": (4, 0.6170, "s9vokocg"),
+        "boot10": (3, 0.6208, "bxx09je1"),
+    },
+    # Derived 2026-10-30 from the .wandb datastores of the three arms, cross-checked
+    # against each run's six "Validation -- IoU:" lines. NOT a bootstrap ensemble: all
+    # three arms train the SAME replicate (train_boot001.csv) and differ only in `seed`,
+    # so "member" here means seed arm, and the spread measures the optimization-path
+    # variance component the other three regimes hold fixed. See NOTES, "Seed ablation".
+    #
+    # seed00 IS 672hr_stable/boot01 -- set_global_seed(0) is manual_seed(42) and the
+    # sampler's default seed is already 0 -- so it was never retrained. Its (epoch, IoU)
+    # therefore matches boot01's above exactly, as it must. Its weights live under
+    # 672hr_stable/boot01, so 672hr_stable_seed/seed00 is a SYMLINK to ../672hr_stable/
+    # boot01, which keeps the naming convention intact rather than special-casing it here.
+    #
+    # seed02's selection sits on a 0.0076 IoU margin over its own epoch 5 (0.6053 vs
+    # 0.5977). On a 200-frame validation set that is selection noise, and it is the
+    # cleanest illustration in this repo of why IoU-based epoch picking is fragile: the
+    # same recipe, perturbed only in its seed, hands best.pth a mid-run epoch whose
+    # advantage would not survive a different validation draw. Both other arms pick ep5.
+    "672hr_stable_seed": {
+        "seed00": (5, 0.6006, "j6huxcrn"),
+        "seed01": (5, 0.6004, "bm06c9dt"),
+        "seed02": (2, 0.6053, "x7m7u8fz"),
+    },
 }
 
 DEFAULT_REGIME = "168hrs"
@@ -103,7 +165,14 @@ DEFAULT_NC_DIR = "./assets/infer_data"
 
 
 def regime_defaults(regime: str) -> dict:
-    """Weights / config / output roots for a regime, all named after it on disk."""
+    """Weights / config / output roots for a regime, all named after it on disk.
+
+    Every regime resolves here, `672hr_stable_seed` included -- that regime was renamed
+    from `seed_ablation` (and its directories moved) precisely so it would, instead of
+    needing three explicit --*_root flags. Its one irregularity is handled on disk rather
+    than in code: seed00 was never retrained, so 672hr_stable_seed/seed00 is a symlink to
+    ../672hr_stable/boot01.
+    """
     return {
         "weights_root": f"/efs/bathomas/ar_seg_bootstrap/{regime}",
         "config_dir": f"/efs/bathomas/configs_bootstrap/{regime}",
