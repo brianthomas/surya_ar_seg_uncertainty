@@ -191,6 +191,15 @@ def main() -> None:
                         "both scale with this.")
     p.add_argument("--max-epochs", type=int, default=10,
                    help="optimizer.max_epochs. Pass 0 to inherit the base config's value.")
+    p.add_argument("--seed-start", type=int, default=None,
+                   help="Give each member its own model seed: member i gets --seed-start + i - 1. "
+                        "Omit it (the default) to write no `seed` key at all, which is what the "
+                        "four existing ensembles ran under -- every member at finetune.py's "
+                        "default seed 0, so member spread is purely finite-sample. Pass 1 to "
+                        "pair each arm with its seed-0 counterpart in the parent ensemble and "
+                        "get a paired read on the optimization-path component. NOTE the "
+                        "sentinel is None, not 0: `--seed-start 0` is a valid request that "
+                        "writes seed 0..9, which is NOT the same as omitting the flag.")
 
     # Optimizer stability. The base config's lr 1e-3 with no schedule and no clipping is only
     # safe for short epochs: it held up at 168 steps/epoch, spiked on isolated epochs at 672
@@ -283,6 +292,19 @@ def main() -> None:
         experiment = os.path.join(args.experiment_root, f"boot{i:02d}")
         cfg["path_experiment"] = experiment
 
+        # --- the optional fourth: a per-member model seed ---
+        # Inserted immediately after job_id rather than appended, so `seed` sits at the top of
+        # the file beside the other thing that identifies this arm. Skipped entirely when
+        # --seed-start is absent, which keeps regeneration of the seed-0 ensembles byte-exact.
+        seed = None if args.seed_start is None else args.seed_start + i - 1
+        if seed is not None:
+            rebuilt = {}
+            for key, value in cfg.items():
+                rebuilt[key] = value
+                if key == "job_id":
+                    rebuilt["seed"] = seed
+            cfg = rebuilt
+
         # --- held identical across members ---
         cfg["data"]["ar_index_valid"] = [args.valid_index]
         cfg["data"]["ar_index_test"] = [args.test_index]
@@ -311,23 +333,41 @@ def main() -> None:
         name = f"config_boot{i:02d}.yaml"
         out = os.path.join(args.out_dir, name)
         with open(out, "w") as fh:
+            seed_line = "" if seed is None else SEED_LINE.format(
+                seed=seed, offset=42 + seed, rep=i)
             fh.write(HEADER.format(rep=i, total=total, train=rep_path, n_rows=n_rows,
-                                   experiment=experiment))
+                                   experiment=experiment, seed_line=seed_line))
             yaml.safe_dump(cfg, fh, sort_keys=False, default_flow_style=False)
 
         run_lines.append(RUN_LINE.format(rep=i, total=total,
                                          wandb="" if args.no_wandb else " --wandb",
                                          config=os.path.relpath(out, ".")))
-        rows.append({"member": i, "config": out, "ar_index_train": rep_path,
-                     "n_rows": n_rows, "path_experiment": experiment})
+        row = {"member": i, "config": out, "ar_index_train": rep_path,
+               "n_rows": n_rows, "path_experiment": experiment}
+        if seed is not None:
+            row["seed"] = seed
+        rows.append(row)
 
     n_rows = rows[0]["n_rows"]
     gb_epoch = n_rows * 590 / 1000
     runner_path = args.runner
+    seed_note = ""
+    if args.seed_start is not None:
+        seed_note = (
+            f"#\n# SEED SWEEP: member i trains at model seed {args.seed_start}+i-1, i.e. seeds "
+            f"{args.seed_start}..{args.seed_start + total - 1}, so\n"
+            f"# replicate and optimization path vary together and across-member spread is the "
+            f"TOTAL of\n"
+            f"# the two variance components. Difference the arms against their seed-0 "
+            f"counterparts in the\n"
+            f"# parent ensemble, member by member, for a paired read on the optimization-path "
+            f"part.\n"
+        )
     with open(runner_path, "w") as fh:
         fh.write(RUNNER.format(total=total, n_rows=n_rows, epochs=epochs, gb_epoch=gb_epoch,
                                tb_member=gb_epoch * epochs / 1000,
                                tb_total=gb_epoch * epochs * total / 1000,
+                               seed_note=seed_note,
                                runs="\n".join(run_lines)))
     os.chmod(runner_path, os.stat(runner_path).st_mode | stat.S_IXUSR | stat.S_IXGRP)
 
@@ -351,6 +391,12 @@ def main() -> None:
               + ", ".join(f"{k}={v!r}" for k, v in sorted(wandb_keys.items())))
         if args.no_wandb:
             print("            NOTE: --no-wandb, so the runner omits --wandb and these are inert")
+    if args.seed_start is None:
+        print("  seed:     no `seed` key written -- every member at finetune.py's default 0 "
+              "(pure finite-sample spread)")
+    else:
+        print(f"  seed:     {args.seed_start}..{args.seed_start + total - 1}, one per member "
+              f"(spread = finite-sample + optimization-path)")
     print(f"  valid:    {args.valid_index}   (identical for all {total})")
     print(f"  test:     {args.test_index}   (carried only; finetune.py does not read it)")
     print(f"  masks:    {args.ar_mask_root}")
