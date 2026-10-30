@@ -382,14 +382,28 @@ retraining since every epoch_N.pth is kept; (b) HARP 11930 under 672hr_stable, s
 reference markers in the notebooks stop being cross-regime (3 frames, ~8 min); (c) the 168hrs
 cohort, one --regime flag.
 
-Seed ablation: the variance component none of these ensembles sample (run 2026-10-29/30)
+Seed ablation (regime 672hr_stable_seed): the variance component none of these ensembles
+sample (run 2026-10-29/30)
 
-make_seed_ablation_configs.py + configs_bootstrap/seed_ablation/ + run_seed_ablation.sh, with the
-design and caveats in configs_bootstrap/seed_ablation/README.md. RUN AND ANSWERED. Both arms
-completed 6 epochs on replicate train_boot001.csv -- seed01 = bm06c9dt, seed02 = x7m7u8fz -- and
-both printed the "Seed N (torch/numpy/random 42+N, train sampler N)" line, so commit b47cb54's
-plumbing worked. seed00 is 672hr_stable/boot01 (j6huxcrn) by design, not a re-run; all three
-configs under configs_bootstrap/seed_ablation/ name the same ar_index_train, verified.
+make_seed_ablation_configs.py + configs_bootstrap/672hr_stable_seed/ + run_seed_ablation.sh,
+with the design and caveats in configs_bootstrap/672hr_stable_seed/README.md. RUN AND ANSWERED.
+Both arms completed 6 epochs on replicate train_boot001.csv -- seed01 = bm06c9dt,
+seed02 = x7m7u8fz -- and both printed the "Seed N (torch/numpy/random 42+N, train sampler N)"
+line, so commit b47cb54's plumbing worked. seed00 is 672hr_stable/boot01 (j6huxcrn) by design,
+not a re-run; all three configs under configs_bootstrap/672hr_stable_seed/ name the same
+ar_index_train, verified.
+
+NAMED AFTER ITS PARENT REGIME, renamed from `seed_ablation` on 2026-10-30. These arms ARE
+672hr_stable's recipe and replicate with a different seed, so the name says so, and the regime
+key / config dir / checkpoint root (ar_seg_bootstrap/672hr_stable_seed/) / job_id prefix all
+match. That makes run_bootstrap_inference.regime_defaults() resolve all three roots by
+convention -- the earlier layout needed three explicit --*_root flags, because the weights sat
+in their own top-level ar_seg_seed_ablation/ and seed00's sat in a third place again. seed00 is
+now a symlink to ../672hr_stable/boot01, so the convention covers it too. Two consequences
+worth knowing: the completed runs logged the PRE-RENAME job_id prefix (AR-seg_seedabl_seed01,
+not AR-seg_672hr_stable_seed_seed01), so a regenerated config differs from what ran on that one
+key; and `seed` plus `path_experiment` are the only other keys that differ from
+672hr_stable/config_boot01.yaml, re-verified after the regeneration.
 
 ONE EARLIER RUN IS NOT AN ARM. re5vbc9l (13:55) printed "Clipping gradients" but NO Seed line --
 the training box was still on a pre-seed finetune.py -- and was killed with KeyboardInterrupt. It

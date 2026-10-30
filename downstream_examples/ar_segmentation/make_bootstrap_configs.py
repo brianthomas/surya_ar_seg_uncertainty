@@ -16,6 +16,15 @@ Everything else -- and in particular the evaluation indices -- is held identical
 be scored on the same data; if validation were resampled per member, the observed spread would be
 model variance plus evaluation-set variance with no way to separate them.
 
+A FOURTH, OPT-IN DIFFERENCE: --seed-start. Without it no `seed` key is written at all, so every
+member trains at finetune.py's default seed 0 and member spread is purely finite-sample -- a
+clean nonparametric bootstrap, and what all four existing ensembles ran under. With
+--seed-start K, member i gets seed K+i-1, so the replicate AND the optimization path both vary
+and member spread becomes the TOTAL of the two components. Pass --seed-start 1 to pair each arm
+1:1 with its seed-0 counterpart in the parent ensemble: the per-replicate difference is then a
+paired estimate of the optimization-path component, on 9 df rather than the 2 df the one-replicate
+seed ablation in make_seed_ablation_configs.py can reach. See NOTES, "Seed ablation".
+
 Three fixes are applied to every generated config because the shipped config.yaml cannot run the
 ensemble as-is:
 
@@ -85,10 +94,19 @@ HEADER = """\
 # Bootstrap ensemble member {rep} of {total}.
 #   training index : {train}  ({n_rows} samples)
 #   checkpoints    : {experiment}
-#
+{seed_line}#
 # Evaluation indices are identical across all {total} members on purpose: members must be
 # scored on the same data, or model variance and evaluation-set variance are confounded.
 # Regenerate with: python make_bootstrap_configs.py
+"""
+
+SEED_LINE = """\
+#   model seed     : {seed}  (torch/numpy/random {offset}, train sampler {seed})
+#
+# This member varies BOTH its replicate and its seed, so across-member spread here is the total
+# of the finite-sample and optimization-path components rather than the first alone. Its seed-0
+# counterpart is member {rep:02d} of the parent ensemble; the difference between the two is a
+# paired sample of the optimization-path component.
 """
 
 RUNNER = """\
@@ -98,7 +116,7 @@ RUNNER = """\
 # Each member is an independent fine-tune on its own 1-week bootstrap replicate. Checkpoints go
 # to per-member directories, so members never overwrite one another and the script deletes
 # nothing.
-#
+{seed_note}#
 # Cost per member: {n_rows} samples x ~590 MB of SDO NetCDF per epoch = ~{gb_epoch:.0f} GB/epoch,
 # re-fetched each epoch because files are deleted after use. At {epochs} epochs that is
 # ~{tb_member:.1f} TB per member and ~{tb_total:.0f} TB for the ensemble; max_epochs is the main

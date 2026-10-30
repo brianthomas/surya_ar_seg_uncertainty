@@ -266,9 +266,12 @@ def main():
         default=DEFAULT_REGIME,
         choices=sorted(BEST_EPOCH_BY_REGIME),
         help=(
-            "Training regime: 168hrs (one-week replicates) or 672hr (one-month). Sets "
-            "the best-epoch table and the default weights/config/output roots; the "
-            "three --*_root flags below override those defaults individually."
+            "Training regime: 168hrs (one-week replicates), 672hr (one-month), "
+            "672hr_stable (one-month, stabilized LR) or 672hr_stable_seed (the seed "
+            "ablation -- one replicate, three seeds, so member spread is "
+            "optimization-path rather than finite-sample variance). Sets the best-epoch "
+            "table and the default weights/config/output roots; the three --*_root flags "
+            "below override those defaults individually."
         ),
     )
     # Default None rather than a regime-derived path, so an explicit flag is
