@@ -42,6 +42,67 @@ These describe *active regions*, one row per HARP, not one row per frame. None a
 
 Both holdout_ar_large_* files share one schema, differing only in the trailing <split>_overlap_files column. Ranks are non-contiguous in both because rank is assigned over every AR in the era *before* the deproj/holdout filters — holdout_ar_large_from_test.csv starts at rank 2 because rank 1 (HARP 9475) is a polar limb region tagged deproj: Poor.
 
+HOW TO TELL IF A RUN IS OVER- OR UNDERTRAINED (the criteria every entry below applies)
+
+Written down 2026-10-30 because the four diagnoses in this file -- 2016hr divergence,
+672hr_stable boot01, the 672hr_stable ensemble, 168hrs_stable_seeddiag boot01 -- each re-derived
+the same method. Every rule cites the run that established it.
+
+1. SEPARATE DIVERGENCE FROM OVERFITTING FIRST. They look alike in a single IoU column and have
+   opposite fixes. Divergence moves train and validation loss TOGETHER (2016hr: train BCE peaks
+   at 930, val loss follows to 1.28, no gap opens); overfitting moves them APART. The val/train
+   ratio trend is the one-number discriminator -- climbing monotonically is overfitting, flat or
+   falling with both series rising is divergence. Divergence is an optimizer problem: lower
+   learning_rate, add warmup. Overfitting is a budget problem: stop earlier.
+
+2. NAME WHICH CRITERION YOU ARE USING, BECAUSE THEY DISAGREE, AND REPORT BOTH EPOCHS. valid/iou
+   peaks late, valid/loss floors early. Observed gap: 2-3 epochs at 672 samples/epoch, EIGHT at
+   168. A 0.5 threshold ignores confidence magnitude; BCE punishes it. "Best epoch" is
+   meaningless without saying by what.
+
+3. ESTABLISH THE JITTER SCALE BEFORE CALLING ANY PEAK. sigma =~ sd(successive IoU deltas)/sqrt(2),
+   excluding the epoch 0 -> 1 learning jump, then express every claimed gain in sigma. The
+   signature of jitter is adjacent swings that cancel: seeddiag boot01 went -0.0329 at epoch 6
+   then +0.0320 at epoch 7, summing to -0.0009. Its sigma is 0.0136, which makes the apparent
+   epoch-9 peak 1.0 sigma over epoch 3 -- nothing.
+
+4. TEST THE TREND, DO NOT EYEBALL THE MAXIMUM. Spearman rho over the plateau for one run, paired
+   t across members for an ensemble. Both of this file's "peaks at the last epoch" results fail:
+   672hr_stable epoch 4 -> 5 is t(9)=0.67, and seeddiag epochs 2-9 is rho +0.38, t(6)=1.01.
+   Argmax over a noisy series lands on the last epoch roughly as often as chance.
+
+5. THE VALIDATION FRAMES ARE IDENTICAL EVERY EPOCH, so IoU jitter is REAL MODEL CHANGE, not
+   evaluation resampling. valid/pos_frac_true and valid/pixels are constant across every epoch
+   of every run here -- the validation sampler is unseeded and set_epoch() is never called, so
+   the same 200 frames arrive in the same order. What moves is the decision boundary: watch the
+   pred/true AR area ratio, which swung 0.828-1.250 across seeddiag boot01's ten epochs while
+   its probability fit degraded monotonically. Pixels near p=0.5 flip; IoU notices, BCE does not
+   care, and neither is "progress".
+
+6. REPORT A WINDOW, NOT A POINT: from the last epoch with a real IoU gain to the first epoch
+   where val loss is materially above its floor. Then pick one epoch inside it and say why.
+
+7. EXPECT THE FLOOR EPOCH AND THE OVERFITTING DEPTH TO SCALE WITH TRAINING-SET SIZE. 168
+   samples/epoch floors at epoch 1; 672 floors at epoch 2. At matched epoch 5 the 168-sample run
+   is +20.5% above its floor against the 672hr_stable ensemble mean's +6.8% -- about 3x the
+   overfitting for 4x less data. Budget a new regime from its sample count, not by analogy.
+
+8. best.pth TRACKS valid/iou BY DEFAULT, SO IT IS SYSTEMATICALLY THE WORST-CALIBRATED CHECKPOINT
+   OF ITS RUN. 8 of 10 672hr_stable members sit past their own val-loss floor -- gaps
+   0,0,1,1,2,2,3,3,3,5 epochs, median 2 -- and seeddiag boot01 sits eight past. Every
+   epoch_N.pth is retained, so re-selecting by loss costs inference only; the 672hr_stable
+   loss-optimal epochs are listed under that ensemble's entry, and optimizer.best_metric accepts
+   valid/loss if you want it chosen that way up front.
+
+All eight rules are mechanized in epoch_select.py (CPU-only, seconds), which takes any two arms
+that train the same replicates and emits the BEST_EPOCH_BY_REGIME tuples paste-ready:
+
+    python epoch_select.py --sweep-arm <arm> --baseline-arm <parent>
+
+It reproduces the hand-derived verdicts in this file. Prefer it to re-deriving these by hand a
+fifth time -- but read rule 2 before quoting its paired difference, which is whatever the two arms
+actually differ in and for both pairs run so far is more than the seed.
+
 Optimizer divergence in the 2016hr regime (2026-10-27)
 
 The first 2016hr member (boot01, run 2026-10-26, wandb f5ksovav, log /efs/bathomas/run_test_2016.log)
@@ -251,9 +312,13 @@ significantly worse by epoch 5 (paired t(9)=3.17); per member the rise from its 
 THE HEADLINE IS THAT THE TWO SELECTION CRITERIA DISAGREE.
   best valid/iou epoch   {ep3: 1, ep4: 4, ep5: 5}
   min valid/loss epoch   {ep0: 1, ep1: 1, ep2: 4, ep3: 2, ep4: 1, ep5: 1}
-best.pth tracks valid/iou, so for 9 of 10 members it lands 2-3 epochs past that member's
-calibration optimum. boot07 is the lone exception: its val loss is still falling at epoch 5, so
-both criteria pick ep5 there. Selecting on min valid/loss instead costs 0.0168 mean validation
+best.pth tracks valid/iou, so for 8 of 10 members it lands past that member's calibration
+optimum -- per-member gaps 0,0,1,1,2,2,3,3,3,5 epochs, median 2, boot01 the worst at 5.
+[CORRECTED 2026-10-30: this read "9 of 10 ... 2-3 epochs past ... boot07 is the lone exception"
+until the gaps were tabulated. There are TWO members where the criteria agree, boot02 (both ep4)
+and boot07 (both ep5), and only 5 of 10 gaps are in 2-3. The direction of the finding is
+unchanged and the loss-optimal epoch list below was always right.]
+Selecting on min valid/loss instead costs 0.0168 mean validation
 IoU. Every epoch_N.pth is retained, so that re-selection needs no retraining -- the loss-optimal
 epochs are boot01 ep0, boot02 ep4, boot03 ep2, boot04 ep2, boot05 ep3, boot06 ep2, boot07 ep5,
 boot08 ep2, boot09 ep3, boot10 ep1.
@@ -600,6 +665,47 @@ best_metric is deliberately left at valid/iou despite the calibration finding ab
 would confound the paired comparison against parents selected that way, and every epoch_N.pth is
 kept, so re-selecting by loss later needs no retraining.
 
+FIRST ARM IN: 168hrs_stable_seeddiag boot01 (2026-10-30, wandb 69tyui4d, 2.6 h, 10 epochs)
+
+Replicate train_boot001.csv (168 samples), seed 1, stable recipe (lr 1e-3, 18-step warmup,
+cosine to 1e-6, clip 1.0). Run out of the priority order above -- its seed-0 parent
+(168hrs_stable boot01) still does not exist -- so it is usable as an OVERTRAINING diagnostic but
+not yet as a seed measurement. Checkpoints in ar_seg_bootstrap/168hrs_stable_seed_diag/boot01/.
+
+ep  train     vloss     v/t    IoU     Prec    Rec    pred/true
+ 0   0.12515   0.01299   0.10   0.4371  0.5857  0.6326   1.078
+ 1   0.00685   0.01186   1.73   0.4714  0.6741  0.6105   0.906   <- val loss floor
+ 2   0.00559   0.01287   2.30   0.4816  0.6094  0.6966   1.141   <- best compromise
+ 3   0.00481   0.01344   2.80   0.4857  0.5909  0.7318   1.250
+ 4   0.00424   0.01362   3.21   0.4735  0.6365  0.6489   1.031
+ 5   0.00385   0.01429   3.71   0.4824  0.6059  0.7030   1.172
+ 6   0.00336   0.01644   4.89   0.4495  0.6893  0.5638   0.828
+ 7   0.00310   0.01637   5.29   0.4816  0.6754  0.6266   0.938
+ 8   0.00285   0.01646   5.78   0.4971  0.6522  0.6764   1.047
+ 9   0.00275   0.01655   6.02   0.5001  0.6444  0.6907   1.078   <- best.pth (by valid/iou)
+
+BEST GENERALIZED AT EPOCH 2; THE WINDOW IS 1-3. Applying the criteria at the top of this file:
+val loss floors at epoch 1 (0.01186) and rises monotonically to +39.5% by epoch 9, rho +0.952,
+t(8)=8.75 -- while train loss falls 45.6x and val/train climbs 0.10 -> 6.02 without one
+reversal. That is overfitting, not divergence (rule 1). IoU shows NO significant trend over
+epochs 2-9: rho +0.381, t(6)=1.01 (rule 4). Jitter sigma is 0.0136, computed from the
+successive deltas, so the epoch-9 "peak" is 1.0 sigma over epoch 3 and 1.4 sigma over epoch 2
+(rule 3) -- and epoch 6's -0.0329 against epoch 7's +0.0320 is the cancellation signature. Epoch
+2 holds IoU within noise of the run's maximum for +8.5% val loss, against +13.3% at epoch 3 and
++39.5% at epoch 9. Epoch 1 is the choice if calibration matters more than overlap; its IoU
+deficit to epoch 9 (2.1 sigma) is the only marginally real gain in the whole run.
+
+CORROBORATED INDEPENDENTLY by the shipped 168hrs boot01 (b919pvy1), same replicate but seed 0
+and constant lr over 20 epochs: it ALSO floors val loss at epoch 1 (0.01213), then wanders in a
+0.4721-0.5170 IoU band for seventeen epochs and never beats its epoch-8 value in the eleven
+after it (best post-peak 0.5165). Two different seeds and two different LR schedules agree on
+the floor epoch, which is what makes rule 7 a scaling law rather than one run's quirk.
+
+AS A SEED DIAGNOSTIC IT IS CONFOUNDED, and differently from 672hr_stable_seed. There, seed 0 came
+free because the recipe was identical to the parent ensemble. Here the stable recipe differs from
+the shipped constant-lr 168hrs, so 69tyui4d vs b919pvy1 varies seed AND schedule together. The
+clean baseline is 168hrs_stable boot01 -- the prerequisite named above.
+
 WHAT THIS CAN AND CANNOT SETTLE. The diagonal gives the TOTAL spread directly and the
 optimization-path component only through the pairing -- it cannot decompose a single arm, because
 both factors moved. So it is not a substitute for a crossed grid; it is the cheapest honest route
@@ -618,3 +724,180 @@ the regime convention, so regime_defaults() resolves weights/configs/output with
 flags -- then difference each arm against its parent member at the selected epoch and read the
 paired sd. Cost is real: ~24 TB and ~37 h for the 672-sample sweep, ~10 TB and ~15 h for each of
 the two 168-sample runs, plus S3 egress on all of it.
+
+BUDGET DRIFT TO SETTLE BEFORE RUNNING EITHER SWEEP (found 2026-10-30). boot01 is on a different
+max_epochs from its own siblings in BOTH diag sweeps:
+
+  168hrs_stable:            10 10 10 10 10 10 10 10 10 10     consistent
+  168hrs_stable_seed_diag:  10  4  4  4  4  4  4  4  4  4     boot01 is the outlier
+  672hr_stable_seed_diag:    6  5  5  5  5  5  5  5  5  5     boot01 is the outlier
+  672hr_stable_seed:         6  6  6                          consistent
+
+This is the same trap as the old 672hr set (boot01 at 10, rest at 5) and the pre-regeneration
+2016hr set (boot01 at 5, rest at 3, "so the ten were not comparable"). It is NOT a truncation:
+the cosine total is max_epochs x steps_per_epoch, so 69tyui4d annealed over 1680 steps while its
+nine siblings will anneal over 672 and sit at a different LR at every shared epoch index. It also
+breaks the pairing this section depends on -- members 2-10 of the 168hrs diag sweep would pair a
+10-epoch parent against a 4-epoch arm.
+
+The 4-epoch choice for members 2-10 is the RIGHT one and the criteria at the top of this file say
+why: at 168 samples/epoch the usable window closes by epoch 3, so a 4-epoch cosine anneals to
+min_lr exactly at the plateau. It is boot01's 10 epochs that overshoot, by about seven. So the
+fix is to bring boot01 and the baseline DOWN, not the rest up:
+  - regenerate 168hrs_stable_seed_diag boot01 at 4 epochs, and 168hrs_stable at 4, so parent and
+    arm match (keep 69tyui4d's checkpoints -- they are a valid 10-epoch diagnostic and the
+    source of rule 7);
+  - regenerate 672hr_stable_seed_diag boot01 at 5 to match its siblings, or the other nine at 6
+    to match 672hr_stable, whichever keeps the parent pairing intact.
+Dropping the 168hrs baseline from 10 epochs to 4 also cuts it from ~15 h to ~6 h. Flagged rather
+than done: it changes the budget of an already-costed experiment.
+
+Under-training in 672hr_stable_seed_diag, and the fix (2026-11-03)
+
+The ten members trained by run_seed_ablation_672hr_stable.sh are UNDER-trained, and best.pth is
+simultaneously OVER-trained on calibration. Both verdicts are the eight rules at the top of this
+file, mechanized now in epoch_select.py rather than re-derived by hand:
+
+    python epoch_select.py --sweep-arm 672hr_stable_seed_diag --baseline-arm 672hr_stable
+
+Rule 1: overfitting, not divergence. The val/train BCE ratio climbs monotonically in ALL TEN
+members while train BCE falls -- the series move apart. Measured from epoch 1 (epoch 0's ratio is
+below 1 in every member, because epoch-0 train BCE is averaged over the epoch in which the random
+head is still collapsing, and is inflated by it -- not a signal about generalization):
+boot01 1.52->3.20, boot09 1.83->2.85, boot06 1.73->2.75, lowest boot07 1.02->1.55. Train BCE falls
+~0.026 -> 0.003-0.005 everywhere. A budget problem, not an optimizer one.
+
+Rules 3+4: the final epoch is a real gain, so the run stopped too early. Jitter sigma averages
+0.0061 here against the parent's 0.0109, and the paired t across members gives:
+
+  diag, final epoch      mean dIoU +0.0098   t(9) = 3.70   real gain -- still climbing
+  parent ep3 -> ep4      mean dIoU +0.0092   t(9) = 3.12   real gain
+  parent ep4 -> ep5      mean dIoU +0.0012   t(9) = 0.67   fails -- the true plateau
+
+The parent locates the plateau at epoch 4-5. The diag arm's last epoch is 3.
+
+Rules 2+8: the opposite problem at selection. valid/loss floors at epoch 1-2 while IoU peaks at 3,
+so with best_metric valid/iou, best.pth sits strictly past the loss floor in 6/10 members
+(boot01 +19.6% val loss, boot02 +7.7%, boot06 +6.7%, boot09 +6.7%, boot03 +6.2%, boot05 +3.1%).
+The arm is nonetheless better calibrated than the parent (mean selected valid BCE 0.00864 vs
+0.00894) -- truncation traded IoU for calibration.
+
+CAUSE: max_epochs, and nothing else. diff of the two boot01 configs returned exactly four keys --
+job_id, seed, path_experiment, and max_epochs (6 vs 5) -- with replicates, LR, schedule, warmup,
+clipping, LoRA rank and all three data indices byte-identical. The budget was 5 for boot01 and 4
+for boot02-10 against the parent's uniform 6, i.e. cosine totals of 3360/2688 steps against 4032.
+make_bootstrap_configs.py:317 sets max_epochs uniformly, so the 5/4 split cannot come from one
+invocation; the runner (mtime 14:08, comment "At 6 epochs") predated the configs (14:10-14:11),
+so the configs were regenerated at a lower budget after the runner was written. This is the drift
+the previous entry flagged and nobody fixed before the run.
+
+WHY IT MATTERS: the arm exists to be differenced member-by-member against 672hr_stable for a
+paired read on optimization-path variance, which requires the arms to differ in nothing but the
+seed. At best.pth the paired difference (diag - parent) is
+
+  -0.0043 -0.0102 -0.0107 -0.0063 -0.0093 -0.0247 +0.0016 +0.0035 -0.0273 -0.0128
+  mean -0.0101   t(9) = -3.20   negative in 8/10
+
+A pure seed change must be zero-mean. The observed -0.0101 is almost exactly the +0.0104 the
+parent earns in the two epochs this arm never ran. The seed signal is confounded with, and
+dominated by, the missing epochs.
+
+FIXED, in two parts:
+
+  Track A (free, done). Every epoch_N.pth is retained, so re-selection costs inference only
+  (rule 8). epoch_select.py picks per member; the tuples are in run_bootstrap_inference.py under
+  "672hr_stable_seed_diag" and the per-member window/sigma/reason in
+  /efs/bathomas/ar_seg_bootstrap/672hr_stable_seed_diag_epoch_selection.csv. Re-selecting BOTH
+  arms shrinks the paired difference to -0.0041, t(9) = -1.20, p 0.26 -- no longer significant,
+  but reduced rather than removed: the arm still cannot reach epoch 4-5. Per-member selection is
+  mandatory, not tidy, because epoch indices are not comparable across members at a 5/4 split.
+
+  Track B (configs done, ~35 h GPU outstanding). The checkpoints were NOT extended: each annealed
+  to min_lr on its own cosine total, so resuming is not equivalent to having trained longer
+  (make_bootstrap_configs.py:74-78). Instead the 4ep configs and their 85 GB of weights were moved
+  to 672hr_stable_seed_diag.4ep.20261031/ under both configs_bootstrap/ and ar_seg_bootstrap/
+  (the 672hr_stable.10ep.20261027/ convention), and the set regenerated at --max-epochs 6 from
+  the parent's own invocation plus --seed-start 1. bootstrap_subsample.py was deliberately NOT
+  re-run: the replicates are shared with the parent and must stay fixed or the pairing is
+  destroyed. ensemble_index.csv confirms ar_index_train and n_rows identical to the parent.
+  The regenerated runner was copied to /efs/bathomas/ in the same step, so the .sh no longer
+  predates the configs it launches -- that mismatch is how this defect arrived.
+
+  Per-member diff against the parent now returns job_id, seed and path_experiment only.
+  max_epochs is gone from that diff, which is the one-line statement of the fix.
+
+Of the previous entry's two options for this arm -- boot01 down to 5, or the other nine up to 6 --
+the second was taken, because only that keeps the parent pairing intact. The 168hrs half of that
+entry is still flagged rather than done.
+
+ON THE RETRAIN, verify: all 10 logs print "across 4032 total steps (672/epoch)" and "Starting
+training for 6 epochs"; then re-run the paired contrast, where mean(new best IoU - parent best
+IoU) must be indistinguishable from zero. If it is, the residual spread IS the optimization-path
+component and the arm has served its purpose. If it is still one-sided, something beyond the
+epoch budget differs and the configs should be re-diffed before anything is published.
+
+
+The seed question, answered on the holdout (2026-11-04)
+
+ANSWERED, and the budget confound above turned out NOT to matter. 672hr_stable_seed_diag was run
+against 672hr_stable_generalized -- a NEW regime key, the same ten parent checkpoints re-selected
+at the epochs epoch_select.py picks for the baseline arm -- over the 30 non-flaring holdout ARs.
+Both arms at generalized picks, so the selection criterion is matched and only seed and budget
+remain. 600 inferences + two analysis passes via run_infer_seed_diag_672hr_stable.sh; full
+treatment in view_seed_diag_672hr_stable_sections67.ipynb. Paired Wilcoxon on 30 per-AR diffs.
+
+                           sweep    seed 0    paired d    n up    p
+  boundary UNCERTAINTY   14.45 px  12.25 px   +2.19 px   21/30   0.080
+  boundary ERROR         26.64 px  25.26 px   +1.38 px   18/30   0.289
+  ERROR / UNCERTAINTY      2.37x     2.43x      -0.06    11/30   0.109
+  member ASSD sd         12.20 px  10.12 px   +2.08 px   23/30   0.016 *
+  member HD95            110.2 px   81.6 px   +28.5 px   22/30   0.018 *
+  soft-mean IoU           0.7301    0.7296    +0.0005    16/30   1.00
+  pooled bias            +0.0009   -0.0213          --      --      --
+  pooled ECE              0.0069    0.0214          --      --      --
+
+THE BUDGET IS NOT THE CAUSE, which is what this entry's predecessor could not establish. Paired
+per-member ASSD splits as matched +2.07 px (4 replicates at 6 epochs) vs short +2.27 px (6 at
+4-5) -- indistinguishable. Per-member d IoU is ~0 both ways (-0.0031 / +0.0014), the holdout
+analogue of the validation-level -0.0041 (t(9) = -1.20, p 0.26). So the widening is a seed
+effect. The CONFOUND_NOTES entry stays, because 4-vs-6 of ten replicates is evidence, not a
+designed experiment, and retraining the remaining six is still what retires it.
+
+THE WIDENING IS SMALL AND TAIL-DRIVEN. The frame-level test is p = 0.080, NOT significant; what
+is significant is the tail (member sd, HD95). Mean -> median shrinks it 3.3x, from +2.19 to
++0.66 px on per-member medians, and the pooled ECDF has the sweep's CORE marginally TIGHTER
+(89.3 % of member boundary px within one patch vs 90.8 %). boot08's +21.9 px is ONE frame --
+20200607_0100, HARP 7419, truth_frac 0.00121, the cohort minimum -- at 390.7 px against boot08's
+own 14.9 px median. That frame was also the 168hrs arm's outlier at 112.8 px, so it is a
+cross-arm pathology of a tiny AR, not a seed effect. Seeding occasionally produces a
+badly-placed member; it does not uniformly inflate the spread.
+
+IT DOES NOT MAKE THE ERROR BAR HONEST. Error unmoved (p 0.289), ratio unmoved (p 0.109), 25/30
+and 27/30 frames still above 1.0x. Both arms stay ~2.4x under-dispersed. The gap is BIAS -- all
+20 arms share the frozen surya.366m.v1.pt backbone -- so adding the optimization-path component
+cannot close it. Anyone quoting a bootstrap error bar at this budget should add ~9 % (robust) to
+~18 % (mean) for the missing seed component and still not treat the result as calibrated.
+
+WHERE SEEDING ACTUALLY HELPS IS CALIBRATION, and the per-AR shift is easy to misread. The paired
+bias moves +0.0226 on 30/30 ARs, but the baseline is SYSTEMATICALLY UNDER-CONFIDENT (bias
+-0.0124, 22/30 negative, sign test p 0.016) while the sweep has NO CONSISTENT SIGN (15/30 vs
+15/30, p 0.685). Pooled over 13.9 M px: bias -0.0213 -> +0.0009, ECE 0.0214 -> 0.0069, a 3x
+improvement. Seeding REMOVES a systematic under-confidence; it does not introduce
+over-confidence. Brier unmoved (p 0.309), so this is a bias correction, not a sharpness gain.
+
+MECHANISM: a small uniform operating-point shift. The seeded ensemble fires slightly more --
+predicted fraction +0.0008 on 30/30 (p 1.9e-09), recall +0.0195 on 29/30 (p 5.6e-09), precision
+-0.0213 on 2/30 (p 9.3e-09), missed AR at k=0 down 6.30 % -> 5.35 % on 26/30 (p 1.0e-06).
+Precision and recall trade off almost exactly, so soft IoU is identical (p 1.00). Firing a little
+more is what both widens the spread and removes the under-confidence.
+
+ALSO: ICC 0.200 -> 0.298 and Kendall's W 0.103 -> 0.287, so member identity is MORE transferable
+in the seeded arm, largely because boot08 is reliably bad (5.0x tightest-to-loosest spread vs
+3.2x). The baseline's ICC of 0.200 reproduces the 0.19-0.20 both earlier 672-sample cohorts
+landed at -- a consistency check on this pipeline. Replicate character partly survives reseeding:
+Spearman +0.600 (p 0.067) on per-member mean ASSD.
+
+Section 7 here is NOT comparable to any best.pth figure in this repo, including
+672hr_stable_infer_holdout_nonflaring30 (Brier 0.1168, bias +0.0021, ECE 0.0585), which is read
+only as cross-policy context. That is exactly why 672hr_stable_generalized had to be run rather
+than reusing that cache.

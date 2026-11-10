@@ -289,6 +289,116 @@ pairing is what makes the comparison resolvable at all. §1 asserts the pairing 
 checking that each AR's ground-truth positive fraction -- a property of the masks alone -- is
 bit-identical between the two runs.
 
+`view_seed_diag_168hrs_sections67.ipynb` applies the same paired treatment to the **seed**
+question at the 168-sample budget: does an ensemble whose members vary in seed as well as
+replicate carry a wider error bar than one that varies in replicate alone? Its two arms are the
+`168hrs_stable_seed_diag` sweep (replicates 1-10 at seeds 1-10) and the shipped `168hrs`
+ensemble (the same ten replicates at the implicit seed 0). Two things make it different from the
+notebooks above:
+
+* Both arms are read at their **best-generalized** epoch rather than at `best.pth`, chosen by
+  `epoch_select.py` (below). Its §7 calibration numbers are therefore *not* comparable to
+  the published `672hr`/`672hr_stable` figures, which all used the valid/iou argmax.
+* The contrast is **seed and LR schedule together**, because the clean seed-0 parent
+  (`168hrs_stable`, configs generated but never trained) does not exist and the shipped `168hrs`
+  ran constant lr. A null result is the strong reading; a difference cannot be pinned on the seed.
+
+```bash
+# both arms, 300 inferences each (~70 min T4, ~27 GB); --nc_dir ABSOLUTE, see the warning below
+PYTHONPATH=../.. python run_bootstrap_inference.py --regime 168hrs_stable_seed_diag \
+    --nc_dir /efs/bathomas/assets/holdout_nc_nonflaring30 \
+    --output_root /efs/bathomas/ar_seg_bootstrap/168hrs_stable_seed_diag_infer_holdout_nonflaring30
+PYTHONPATH=../.. python run_bootstrap_inference.py --regime 168hrs_generalized \
+    --weights_root /efs/bathomas/ar_seg_bootstrap/168hrs \
+    --config_dir /efs/bathomas/configs_bootstrap/168hrs \
+    --nc_dir /efs/bathomas/assets/holdout_nc_nonflaring30 \
+    --output_root /efs/bathomas/ar_seg_bootstrap/168hrs_gen_infer_holdout_nonflaring30
+```
+
+`view_seed_diag_672hr_stable_sections67.ipynb` is the same question at the **672-sample** budget,
+and is the better-posed of the two: its arms are the `672hr_stable_seed_diag` sweep and
+`672hr_stable_generalized` (the shipped `672hr_stable` checkpoints at `epoch_select.py` picks),
+and both ran the *same* stabilized recipe, so LR schedule is not a confound here. What remains is
+the **epoch budget**, and unevenly: only `boot06/07/09/10` of the sweep were retrained to the
+parent's 6 epochs (2026-11-03/04), leaving `boot01` at 5 and `boot02-05/08` at 4. The notebook's
+§2 therefore splits the budget-matched 4 replicates from the short 6 on per-member ASSD, which is
+the closest this cohort gets to separating seed from budget. Three further things to know:
+
+* The baseline **had** to be re-run rather than read from the existing
+  `672hr_stable_infer_holdout_nonflaring30` cache, which sits at `best.pth`. Pairing the two
+  policies would have differenced seed, budget *and* the selection criterion at once -- and
+  `NOTES` measures how much that matters: re-selecting one arm leaves a paired validation
+  difference of -0.0101 (t(9) = -3.20), re-selecting both shrinks it to -0.0041 (p 0.26). The
+  best-IoU cohort is still read, as cross-policy context only.
+* The sweep's `boot07` pick is **8.43 sigma below its own peak IoU** (window collapsed to 3-3 via
+  the `none within noise of run max` fallback), so no checkpoint in that run is both calibrated
+  and IoU-competitive. Same pathology as `168hrs` `boot05`.
+* The retrain did **not** improve the four members it touched (`boot07` -0.0143, `boot09` -0.0130
+  at their chosen epochs, all four below their parent picks and all four now `overfitting`), so
+  "budget-matched" is not "better".
+
+`run_infer_seed_diag_672hr_stable.sh` runs both arms and both analysis passes in order
+(~2.3 h T4 + ~40 min CPU, ~54 GB, every step resumable), logging to
+`ar_seg_bootstrap/672hr_seed_diag_infer_run.log`. It pins the interpreter to the `surya` env
+deliberately: bare `python` is the notebook env, which has torch but not `einops`, so
+`run_bootstrap_inference.py` dies at import. The two inference commands it wraps are
+
+```bash
+PYTHONPATH=../.. python run_bootstrap_inference.py --regime 672hr_stable_seed_diag \
+    --nc_dir /efs/bathomas/assets/holdout_nc_nonflaring30 \
+    --output_root /efs/bathomas/ar_seg_bootstrap/672hr_stable_seed_diag_infer_holdout_nonflaring30
+PYTHONPATH=../.. python run_bootstrap_inference.py --regime 672hr_stable_generalized \
+    --weights_root /efs/bathomas/ar_seg_bootstrap/672hr_stable \
+    --config_dir /efs/bathomas/configs_bootstrap/672hr_stable \
+    --nc_dir /efs/bathomas/assets/holdout_nc_nonflaring30 \
+    --output_root /efs/bathomas/ar_seg_bootstrap/672hr_stable_gen_infer_holdout_nonflaring30
+```
+
+`168hrs_generalized` and `672hr_stable_generalized` are the two regime keys that do **not**
+follow the naming convention: neither is a training run but the shipped `168hrs` /
+`672hr_stable` checkpoints re-selected at a different epoch, so each
+needs `--weights_root`/`--config_dir` pointed at its own parent plus its own `--output_root`. The
+`168hrs` and `672hr_stable` keys are untouched and remain the best-IoU records.
+`epoch_select.py` prints the baseline arm's re-selection under exactly this `<arm>_generalized`
+name, paste-ready, so neither block was hand-transcribed into `BEST_EPOCH_BY_REGIME`.
+
+### Choosing an epoch that is neither over- nor under-trained
+
+`epoch_select.py` mechanizes the eight rules under "HOW TO TELL IF A RUN IS OVER- OR
+UNDERTRAINED" in `NOTES`, which four separate entries in that file had each re-derived by hand.
+It reads the `.wandb` datastores rather than the logs -- the logs round validation IoU to four
+decimals, coarser than the jitter sigma rule 3 has to estimate -- and derives the member-to-run
+mapping from each run's `wandb-metadata.json`, cross-checking every value against that run's own
+`output.log`. It takes any two arms that train the same replicates, named by their directory
+under `/efs/bathomas/configs_bootstrap`, and asserts the replicate pairing from each arm's own
+`ensemble_index.csv` rather than assuming it. CPU-only, seconds to run:
+
+```bash
+# the two 168-sample arms. --out only because this pair's CSV is named after its BASELINE arm;
+# the default is <sweep-arm>_epoch_selection.csv
+python epoch_select.py --sweep-arm 168hrs_stable_seed_diag --baseline-arm 168hrs \
+    --out /efs/bathomas/ar_seg_bootstrap/168hrs_epoch_selection.csv
+
+# the 672-sample seed sweep against its stabilized parent
+python epoch_select.py --sweep-arm 672hr_stable_seed_diag --baseline-arm 672hr_stable
+```
+
+It writes `<arm>_epoch_selection.csv` with, per member, the
+window (last epoch that took new high ground in IoU by >2 jitter sigma, through the first
+post-floor epoch whose val loss is >10 % above its floor), the pick, the jitter sigma, the trend
+tests, and a one-line reason. It reproduces the hand-derived verdict already recorded in `NOTES`
+for the 168-sample sweep's boot01: window 1-3, pick epoch 2.
+
+What the paired difference it prints *means* is a property of the two arms, not of the script:
+`CONFOUND_NOTES` records the known confound for each pair it has been run on (both pairs so far
+differ in more than the factor the arm directory is named after), and a pair with no entry gets a
+warning rather than a clean reading. For the 672-sample pair that confound is the epoch budget --
+see "Under-training in `672hr_stable_seed_diag`" in `NOTES`.
+
+> **Pass `--nc_dir` as an absolute path.** `analyze_holdout_sections67.py` reopens whatever
+> string lands in each `prob_*.nc`'s `source_file` attribute to read the cube's WCS, so a
+> relative `./assets/...` silently pins the analysis step to one working directory.
+
 Disk: 15.7 GB of input cubes plus ~23 GB of inference output (`channels.nc` is 436 MB per
 frame and is only needed for the exemplar figures). Both live on EFS.
 

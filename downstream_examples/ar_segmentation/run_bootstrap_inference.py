@@ -158,6 +158,168 @@ BEST_EPOCH_BY_REGIME = {
         "seed01": (5, 0.6004, "bm06c9dt"),
         "seed02": (2, 0.6053, "x7m7u8fz"),
     },
+    # The diagonal seed sweep at the 672-sample budget, re-selected by `epoch_select.py` on
+    # 2026-11-04. Like the two entries below, these epochs are NOT the valid/iou argmax; the
+    # third value is validation IoU at the CHOSEN epoch, so it is at or below the run's peak.
+    #     python epoch_select.py --sweep-arm 672hr_stable_seed_diag \
+    #         --baseline-arm 672hr_stable
+    #
+    # THIS ARM MIXES THREE EPOCH BUDGETS, so epoch indices are NOT comparable across members and
+    # per-member selection is mandatory rather than tidy:
+    #     boot06, boot07, boot09, boot10   6 epochs, retrained 2026-11-03/04 (4032-step cosine)
+    #     boot01                           5 epochs (3360-step cosine)
+    #     boot02-boot05, boot08            4 epochs (2688-step cosine)
+    # The 4/5-epoch budgets are the original drift -- configs regenerated below the parent's
+    # uniform 6 after the runner was written, the same defect recorded for
+    # 168hrs_stable_seed_diag below. Only four members were brought up to the parent's budget
+    # (/efs/bathomas/run_seed_ablation_672hr_stable_short.log).
+    #
+    # THE RETRAIN DID NOT IMPROVE THOSE FOUR, which is why the other six were left alone.
+    # Best-generalized IoU against their own archived 4-epoch counterparts: boot06 +0.0154,
+    # boot10 +0.0029, but boot07 -0.0143 and boot09 -0.0130; all four still sit below their
+    # parent picks (-0.0020, -0.0127, -0.0252, -0.0099). All four also moved from
+    # `no-degradation` to `overfitting`. The mechanism is the schedule, not the seed: a 4-epoch
+    # cosine is a COMPLETE schedule annealed to min_lr, so its last checkpoint is fully settled,
+    # whereas 6 epochs spend two more at meaningful LR and buy IoU creep by degrading the
+    # probability fit. best.pth is epoch 5 for all four, at +12.8%, +12.8%, +16.9% and +2.0%
+    # over their own val-loss floors.
+    #
+    # Two entries not to read at face value:
+    #   boot07 -- floor at epoch 1, +11.4% by epoch 3, IoU still climbing to epoch 5, so its
+    #     window collapses to 3-3 and the pick is 8.43 sigma below its own peak via the
+    #     "none within noise of run max" fallback. No checkpoint here is both calibrated and
+    #     IoU-competitive; same pathology as 168hrs boot05 below.
+    #   boot08 -- its val loss at the pick reads +17.0% over the floor, but that is NOT a
+    #     penalty: the floor is epoch 3, the last epoch, so the epoch-2 pick sits on the
+    #     pre-floor descent rather than past it.
+    #
+    # Across the merged arm the pick differs from best.pth in 9/10 members; mean IoU is 0.6116
+    # at these picks against 0.6201 at best.pth, so 0.0085 mean IoU buys the calibration back.
+    #
+    # THE SEED CONTRAST IS STILL CONFOUNDED. Only 4 of 10 members reached the parent's budget,
+    # so a paired difference against 672hr_stable still mixes seed with epoch budget -- see
+    # CONFOUND_NOTES in epoch_select.py. These tuples are inference-ready; the seed contrast is
+    # not, and needs the remaining six retrained at 6 epochs.
+    #
+    # PATHS: regime_defaults() now resolves both roots with no flags. boot01-boot05 and boot08
+    # are symlinks under ar_seg_bootstrap/672hr_stable_seed_diag/ into
+    # 672hr_stable_seed_diag.4ep.20261031/ (the 672hr_stable_seed/seed00 convention), because
+    # their weights were moved aside on 2026-11-03 so the retrain could not overwrite them.
+    # The unsuffixed config dir carries max_epochs 6 for all ten even though six trained at 4-5;
+    # that is harmless here because inference reads no optimizer key, but it does mean the config
+    # is no longer a record of how those six were trained -- the archived 4ep config dir is.
+    # Note epoch_select.py can no longer rediscover the 4ep runs for boot06/07/09/10: discovery
+    # keys on the config-dir string in each run's wandb-metadata.json, identical for both, and
+    # resolves to the newest run per member. The durable records are
+    # /efs/bathomas/ar_seg_bootstrap/672hr_stable_seed_diag_epoch_selection.csv (this selection)
+    # and ..._epoch_selection.4ep.20261031.csv (the superseded all-4ep one).
+    "672hr_stable_seed_diag": {
+        "boot01": (3, 0.5942, "gcbilj9y"),
+        "boot02": (2, 0.5833, "m34bg8j8"),
+        "boot03": (1, 0.6396, "d9sqd0sl"),
+        "boot04": (1, 0.6263, "3ufxzmx1"),
+        "boot05": (2, 0.6469, "5iwqnbbb"),
+        "boot06": (5, 0.6084, "4yzuigs0"),
+        "boot07": (3, 0.6470, "ras44jxi"),
+        "boot08": (2, 0.5830, "ub25vmph"),
+        "boot09": (2, 0.5767, "nj2edxhx"),
+        "boot10": (4, 0.6110, "en38qsxh"),
+    },
+    # The two entries below were selected by `epoch_select.py` (then named
+    # `epoch_select_168hrs.py`) on 2026-10-31, which mechanizes the eight rules under
+    # "HOW TO TELL IF A RUN IS OVER- OR UNDERTRAINED" in NOTES.
+    # They are therefore, with the entry above and `672hr_stable_generalized` at the bottom, the
+    # only entries in this table whose epoch is NOT
+    # the valid/iou argmax: the third value is still each member's validation IoU, but at the
+    # *chosen* epoch, so it is below its own run's peak by construction (every pick is within 2
+    # jitter sigma of that peak, except 168hrs boot05 -- see below). Re-derive either entry with:
+    #     python epoch_select.py --sweep-arm 168hrs_stable_seed_diag --baseline-arm 168hrs \
+    #         --out /efs/bathomas/ar_seg_bootstrap/168hrs_epoch_selection.csv
+    # which prints both blocks paste-ready and writes that CSV with the window, the jitter sigma,
+    # the trend tests and a one-line reason per member. Pass --out for this pair only: its CSV is
+    # named after the BASELINE arm, where the script now defaults to the sweep arm's name.
+    #
+    # The diagonal seed sweep: arm i trains replicate boot_i at seed i, stabilized recipe.
+    # boot01 is on a 10-epoch/1680-step cosine while boot02-boot10 are on 4-epoch/672-step ones
+    # (the budget drift NOTES flagged and nobody fixed before the run), so epoch indices are NOT
+    # equivalent across members here and per-member selection is mandatory rather than tidy.
+    "168hrs_stable_seed_diag": {
+        "boot01": (2, 0.4816, "69tyui4d"),
+        "boot02": (3, 0.5090, "onw713rt"),
+        "boot03": (1, 0.4792, "mi7ff4jy"),
+        "boot04": (2, 0.4644, "ys7gyg5q"),
+        "boot05": (2, 0.5140, "ewdcm1lj"),
+        "boot06": (0, 0.3795, "83vxunn2"),
+        "boot07": (3, 0.4953, "sonnz3ww"),
+        "boot08": (2, 0.4418, "fxhzd259"),
+        "boot09": (1, 0.4814, "lx5xaa7l"),
+        "boot10": (3, 0.4789, "lv2ka4t6"),
+    },
+    # The SHIPPED 168hrs ensemble re-selected at best-generalized epochs -- same ten checkpoints
+    # directories as "168hrs" above, different epoch out of each. Deliberately does NOT follow the
+    # naming convention, because there is no ar_seg_bootstrap/168hrs_generalized on disk: run it
+    # with --weights_root/--config_dir pointed at 168hrs and its own --output_root, the same shape
+    # as the 672hr_stable_minloss re-selection. "168hrs" is left untouched; it is the best-IoU
+    # record that README.md and NOTES cite.
+    #
+    # Two members to know about. boot08 and boot09 pick epoch 0 because their jitter sigma is
+    # 0.059 and 0.047 -- no later epoch ever takes new high ground by 2 sigma, so every epoch is
+    # statistically tied and epoch 0 is the cheapest. That is the constant-lr operating-point
+    # thrash the 168hrs README documents, not a selection bug. boot05 is the one pick further than
+    # 2 sigma from its own peak (4.09): its val loss is already +28 % above its floor by epoch 2,
+    # so its window collapses to a single epoch and no checkpoint is both calibrated and
+    # IoU-competitive.
+    "168hrs_generalized": {
+        "boot01": (6, 0.4959, "b919pvy1"),
+        "boot02": (8, 0.4974, "zz6vdbsd"),
+        "boot03": (4, 0.4700, "xu7fqbem"),
+        "boot04": (2, 0.5233, "jkdf1iu9"),
+        "boot05": (2, 0.4984, "zeddewff"),
+        "boot06": (3, 0.4904, "m2mmkryf"),
+        "boot07": (1, 0.4608, "noa3fm8f"),
+        "boot08": (0, 0.4089, "ftqm9isf"),
+        "boot09": (0, 0.4195, "v7ea6fcs"),
+        "boot10": (4, 0.4610, "wepnogck"),
+    },
+    # The SHIPPED 672hr_stable ensemble re-selected at best-generalized epochs -- same ten
+    # checkpoint directories as "672hr_stable" above, a different epoch out of each. Like
+    # 168hrs_generalized it does NOT follow the naming convention, because there is no
+    # ar_seg_bootstrap/672hr_stable_generalized on disk: run it with --weights_root/--config_dir
+    # pointed at 672hr_stable and its own --output_root. "672hr_stable" is left untouched; it is
+    # the best-IoU record README.md and NOTES cite, and the root
+    # 672hr_stable_infer_holdout_nonflaring30 was produced from it.
+    #
+    # WHY THIS ENTRY EXISTS: it is the epoch-matched seed-0 baseline for
+    # 672hr_stable_seed_diag above. That arm's tuples are epoch_select picks, so pairing it
+    # against the best-IoU 672hr_stable root would difference seed, epoch budget AND the
+    # selection criterion at once. NOTES ("Under-training in 672hr_stable_seed_diag") measures
+    # how much that matters on validation: re-selecting ONE arm leaves a paired difference of
+    # -0.0101 (t(9) = -3.20), re-selecting BOTH shrinks it to -0.0041 (t(9) = -1.20, p 0.26).
+    # README also warns that section 7 calibration at generalized picks is not comparable to any
+    # best.pth figure in this project. This entry is what makes the holdout contrast epoch-policy
+    # matched; it changes nothing about the sweep.
+    #
+    # Derived 2026-11-04 from the `672hr_stable` rows of
+    # /efs/bathomas/ar_seg_bootstrap/672hr_stable_seed_diag_epoch_selection.csv, which
+    #     python epoch_select.py --sweep-arm 672hr_stable_seed_diag --baseline-arm 672hr_stable
+    # writes (it re-selects the baseline arm as well as the sweep, and prints both blocks
+    # paste-ready). The pick differs from best.pth in 7 of 10 members -- only boot02, boot07 and
+    # boot10 already sat at a generalized epoch -- and mean validation IoU falls 0.6274 -> 0.6166,
+    # which is the 0.011 the calibration costs. 8 of 10 members diagnose as `overfitting` at
+    # best.pth, which is rule 8's point: the valid/iou argmax is systematically the
+    # worst-calibrated checkpoint of its run.
+    "672hr_stable_generalized": {
+        "boot01": (3, 0.5854, "j6huxcrn"),
+        "boot02": (4, 0.6018, "s96wimmi"),
+        "boot03": (2, 0.6279, "9ei4z7gv"),
+        "boot04": (2, 0.6223, "vivfkjiv"),
+        "boot05": (3, 0.6481, "wacgmsao"),
+        "boot06": (2, 0.6104, "tcu7qblb"),
+        "boot07": (5, 0.6597, "f76zjsdj"),
+        "boot08": (2, 0.5880, "rkbzguhx"),
+        "boot09": (2, 0.6018, "s9vokocg"),
+        "boot10": (3, 0.6208, "bxx09je1"),
+    },
 }
 
 DEFAULT_REGIME = "168hrs"
@@ -172,6 +334,14 @@ def regime_defaults(regime: str) -> dict:
     needing three explicit --*_root flags. Its one irregularity is handled on disk rather
     than in code: seed00 was never retrained, so 672hr_stable_seed/seed00 is a symlink to
     ../672hr_stable/boot01.
+
+    The two exceptions are `168hrs_generalized` and `672hr_stable_generalized`, neither of
+    which is a training run at all: they are the shipped `168hrs` / `672hr_stable`
+    checkpoints re-selected at a different epoch. There is nothing named after either on
+    disk, so each needs --weights_root and --config_dir pointed at its parent plus its own
+    --output_root; the paths this returns for them do not exist. A re-selection is not a
+    regime, and giving one a directory tree of symlinks to pretend otherwise would
+    duplicate 18 GB of checkpoints to save two flags.
     """
     return {
         "weights_root": f"/efs/bathomas/ar_seg_bootstrap/{regime}",
@@ -266,12 +436,21 @@ def main():
         default=DEFAULT_REGIME,
         choices=sorted(BEST_EPOCH_BY_REGIME),
         help=(
-            "Training regime: 168hrs (one-week replicates), 672hr (one-month), "
-            "672hr_stable (one-month, stabilized LR) or 672hr_stable_seed (the seed "
-            "ablation -- one replicate, three seeds, so member spread is "
-            "optimization-path rather than finite-sample variance). Sets the best-epoch "
-            "table and the default weights/config/output roots; the three --*_root flags "
-            "below override those defaults individually."
+            "Which ensemble to run. Bootstrap regimes: 168hrs (one-week replicates), "
+            "672hr (one-month), 672hr_stable (one-month, stabilized LR). "
+            "672hr_stable_seed is the seed ablation -- one replicate, three seeds, so "
+            "member spread is optimization-path rather than finite-sample variance. "
+            "The two *_stable_seed_diag arms are diagonal seed sweeps (replicate i at "
+            "seed i), so their spread is both components at once; both read at "
+            "epoch_select picks and both on mixed epoch budgets. "
+            "168hrs_generalized and 672hr_stable_generalized are not training runs but "
+            "the shipped 168hrs / 672hr_stable checkpoints re-selected at generalized "
+            "epochs, and are the epoch-matched baselines for the two seed sweeps; they "
+            "have no directories of their own, so they need --weights_root/--config_dir "
+            "pointed at the parent plus their own --output_root. "
+            "Sets the best-epoch table and, for every other regime, the default "
+            "weights/config/output roots; the three --*_root flags below override those "
+            "defaults individually."
         ),
     )
     # Default None rather than a regime-derived path, so an explicit flag is
