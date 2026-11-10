@@ -23,6 +23,14 @@ data:
   num_data_workers: 8
   prefetch_factor: 2
   scalers_path: ./assets/scalers.yaml
+  # --- Corner-scaling correction (see KNOWN_ISSUE_channel_offset.md) ---
+  # The released cubes have 8 channels shifted diagonally by (976/RSUN_OBS - 1)*2048 px
+  # (~0 px in Jan, ~70 px in Jul). true recenters them on load. Keep train, validation
+  # and inference on the same setting. Left false until a July cube confirms the sign
+  # with check_disk_alignment.py.
+  fix_corner_scaling: false
+  # corner_scaling_channels: ['aia94', 'aia131', 'aia171', 'aia193', 'aia211', 'aia304', 'aia335', 'hmi_m']
+  # corner_scaling_sign: 1   # -1 only if check_disk_alignment.py shows the shift runs the other way
   #### Put your donwnstream (DS) specific parameters below this line
   # Directory holding the downloaded AR mask .h5 files, i.e. the parent of the
   # dataset's data/ folder. Relative paths resolve against the working directory.

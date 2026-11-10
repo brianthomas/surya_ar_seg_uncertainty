@@ -62,6 +62,7 @@ import yaml
 
 from infer import load_model
 from infer_file import normalize, read_hc_file, timestamp_from_file
+from surya.datasets.disk_alignment import corner_scaling_kwargs
 from surya.utils.data import build_scalers
 from surya.utils.distributed import set_global_seed
 
@@ -371,7 +372,10 @@ def main():
                 continue
 
             t0 = time.time()
-            raw, attrs = read_hc_file(nc_path, channels)
+            # Each member's own config decides, so inputs match how it was trained.
+            raw, attrs = read_hc_file(
+                nc_path, channels, corner_scaling=corner_scaling_kwargs(config["data"])
+            )
             timestamp = timestamp_from_file(nc_path, attrs)
             ts = normalize(raw, channels, scalers)
             del raw
