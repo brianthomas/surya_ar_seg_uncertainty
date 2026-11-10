@@ -34,6 +34,11 @@ import xarray as xr
 import yaml
 from matplotlib.colors import ListedColormap
 
+from surya.datasets.disk_alignment import (
+    corner_scaling_kwargs,
+    rsun_obs_from_attrs,
+    undo_corner_scaling,
+)
 from surya.datasets.helio import transform
 from surya.utils.data import build_scalers
 from surya.utils.distributed import set_global_seed
@@ -60,16 +65,38 @@ CHANNEL_CMAPS = {
 }
 
 
-def read_hc_file(filepath: str, channels: list[str], s3_anon: bool = False) -> np.ndarray:
+def _stack(ds, channels: list[str], corner_scaling: dict | None) -> np.ndarray:
+    data = ds[channels].to_array().load().to_numpy()
+    if corner_scaling and corner_scaling.get("fix_corner_scaling"):
+        data = undo_corner_scaling(
+            data,
+            channels,
+            rsun_obs_from_attrs(ds, channels),
+            affected=corner_scaling.get("corner_scaling_channels"),
+            sign=corner_scaling.get("corner_scaling_sign", 1),
+        )
+    return data
+
+
+def read_hc_file(
+    filepath: str,
+    channels: list[str],
+    s3_anon: bool = False,
+    corner_scaling: dict | None = None,
+) -> np.ndarray:
     """Read one HelioFM NetCDF cube into a (C, H, W) array, in `channels` order.
 
     Accepts a local path or an ``s3://bucket/key`` URI. S3 objects are staged to
     scratch, read, and deleted -- the same download-then-read path
     HelioNetCDFDataset uses, and for the same reason (these cubes stream badly).
+
+    ``corner_scaling`` is ``corner_scaling_kwargs(config["data"])``; when it turns
+    the correction on, the corner-scaled channels are recentered exactly as
+    HelioNetCDFDataset does in training (see KNOWN_ISSUE_channel_offset.md).
     """
     if not is_s3_path(filepath):
         with xr.open_dataset(filepath, engine="h5netcdf", chunks=None, cache=False) as ds:
-            return ds[channels].to_array().load().to_numpy(), dict(ds.attrs)
+            return _stack(ds, channels, corner_scaling), dict(ds.attrs)
 
     scratch = default_scratch_dir()
     os.makedirs(scratch, exist_ok=True)
@@ -80,7 +107,7 @@ def read_hc_file(filepath: str, channels: list[str], s3_anon: bool = False) -> n
         print(f"Downloading {filepath} to {local_path}")
         client.download_file(bucket, key, local_path)
         with xr.open_dataset(local_path, engine="h5netcdf", chunks=None, cache=False) as ds:
-            return ds[channels].to_array().load().to_numpy(), dict(ds.attrs)
+            return _stack(ds, channels, corner_scaling), dict(ds.attrs)
     finally:
         try:
             os.remove(local_path)
@@ -260,7 +287,10 @@ def run(
 
     print(f"Reading {input_file}")
     raw, attrs = read_hc_file(
-        input_file, all_channels, s3_anon=config["data"].get("s3_anon", False)
+        input_file,
+        all_channels,
+        s3_anon=config["data"].get("s3_anon", False),
+        corner_scaling=corner_scaling_kwargs(config["data"]),
     )
     timestamp = timestamp_from_file(input_file, attrs)
     ts = normalize(raw, all_channels, scalers)
@@ -369,12 +399,23 @@ def main():
         type=str,
         help="Device to run inference on (cuda or cpu).",
     )
+    parser.add_argument(
+        "--fix_corner_scaling",
+        action="store_true",
+        help=(
+            "Recenter the corner-scaled channels before inference (overrides the "
+            "config). Use only with checkpoints trained the same way; see "
+            "KNOWN_ISSUE_channel_offset.md."
+        ),
+    )
     args = parser.parse_args()
 
     set_global_seed(42)
 
     config = yaml.safe_load(open(args.config_path, "r"))
     config["data"]["scalers"] = yaml.safe_load(open(config["data"]["scalers_path"], "r"))
+    if args.fix_corner_scaling:
+        config["data"]["fix_corner_scaling"] = True
 
     if config["dtype"] == "float16":
         config["dtype"] = torch.float16

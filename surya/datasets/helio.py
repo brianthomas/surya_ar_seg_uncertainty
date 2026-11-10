@@ -24,6 +24,7 @@ from surya.utils.s3 import (
     parse_s3_uri,
 )
 from surya.utils.log import create_logger
+from surya.datasets.disk_alignment import rsun_obs_from_attrs, undo_corner_scaling
 from functools import cache
 
 from numba import njit, prange
@@ -241,8 +242,16 @@ class HelioNetCDFDataset(Dataset):
         s3_scratch_dir: str | None = None,
         s3_boto3_max_concurrency: int = 4,
         s3_boto3_part_size_mb: int = 64,
+        fix_corner_scaling: bool = False,
+        corner_scaling_channels: list[str] | None = None,
+        corner_scaling_sign: int = 1,
     ):
         self.scalers = scalers
+        # Undo the corner-anchored disk rescaling found in the released core-sdo cubes.
+        # Off by default so existing runs reproduce. See surya/datasets/disk_alignment.py.
+        self.fix_corner_scaling = fix_corner_scaling
+        self.corner_scaling_channels = corner_scaling_channels
+        self.corner_scaling_sign = corner_scaling_sign
         self.phase = phase
         self.channels = channels
         self.num_mask_aia_channels = num_mask_aia_channels
@@ -526,8 +535,20 @@ class HelioNetCDFDataset(Dataset):
         with xr.open_dataset(
             filepath, engine="h5netcdf", chunks=None, cache=False,
         ) as ds:
-            data = ds[channels].to_array().load().to_numpy()
+            return self._read_channels(ds, channels)
 
+    def _read_channels(self, ds: xr.Dataset, channels: list[str]) -> np.ndarray:
+        """Stack ``channels`` from an open cube into (C, H, W), applying the
+        corner-scaling correction when ``fix_corner_scaling`` is set."""
+        data = ds[channels].to_array().load().to_numpy()
+        if self.fix_corner_scaling:
+            data = undo_corner_scaling(
+                data,
+                channels,
+                rsun_obs_from_attrs(ds, channels),
+                affected=self.corner_scaling_channels,
+                sign=self.corner_scaling_sign,
+            )
         return data
 
     def _read_s3_via_download(self, s3_uri: str, channels: list[str]) -> np.ndarray:
@@ -553,7 +574,7 @@ class HelioNetCDFDataset(Dataset):
             with xr.open_dataset(
                 local_path, engine="h5netcdf", chunks=None, cache=False,
             ) as ds:
-                return ds[channels].to_array().load().to_numpy()
+                return self._read_channels(ds, channels)
         finally:
             try:
                 os.remove(local_path)

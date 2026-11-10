@@ -487,6 +487,24 @@ aws s3 cp --recursive --no-sign-request s3://nasa-surya-bench/2011/02/ /scratch/
 # then set sdo_data_root_path: /scratch/sdo
 ```
 
+### Channel misregistration in the input cubes
+
+In the released core-sdo cubes, aia94, aia131, aia171, aia193, aia211, aia304, aia335
+and hmi_m appear shifted diagonally from aia1600, the HMI vector channels, hmi_v and the
+AR masks: about 0 px in January, up to about 70 px per axis in July. This is consistent
+with the disk-size normalization having been applied about array index (0, 0) for those
+channels. A correction is available behind `data.fix_corner_scaling` (off by default):
+
+```yaml
+data:
+  fix_corner_scaling: true
+```
+
+Use the same setting for training, validation and inference, and run
+`check_disk_alignment.py` on a summer cube before turning it on. See
+[KNOWN_ISSUE_channel_offset.md](KNOWN_ISSUE_channel_offset.md) for the evidence, the
+correction and the verification steps.
+
 ## File Structure
 
 ```
@@ -502,6 +520,8 @@ ar_segmentation/
 ├── infer.py                    # Inference script
 ├── run_inference_example.sh    # Inference example
 ├── dataset.py                  # Dataset class implementation
+├── check_disk_alignment.py     # Per-channel disk-offset check (see KNOWN_ISSUE_channel_offset.md)
+├── KNOWN_ISSUE_channel_offset.md # Channel misregistration in the input cubes
 ├── segmentation_models.py      # Model definitions
 └── assets/                     # Data indices and downloaded data
 ```

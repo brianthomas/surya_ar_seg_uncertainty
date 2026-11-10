@@ -15,6 +15,7 @@ from segmentation_models import HelioSpectformer2D, UNet
 
 # Import from surya
 from surya.utils.data import build_scalers
+from surya.datasets.disk_alignment import corner_scaling_kwargs
 from surya.utils.distributed import set_global_seed
 from surya.datasets.helio import HelioNetCDFDataset
 from finetune import apply_peft_lora, custom_collate_fn
@@ -161,6 +162,9 @@ def get_dataloader(config, scalers, data_type="test",num_samples=3):
         s3_boto3_max_concurrency=config["data"].get("s3_boto3_max_concurrency", 4),
         s3_boto3_part_size_mb=config["data"].get("s3_boto3_part_size_mb", 64),
     )
+    # Corner-scaling correction (off unless the config turns it on); see
+    # KNOWN_ISSUE_channel_offset.md.
+    s3_kwargs.update(corner_scaling_kwargs(config["data"]))
 
     dataset = HelioNetCDFDataset(
         sdo_data_root_path=config["data"]["sdo_data_root_path"],

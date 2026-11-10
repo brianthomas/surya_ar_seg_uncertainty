@@ -93,6 +93,10 @@ Two things beyond `download_data.sh` are needed (see `README.md` for full detail
   `valid_indices` from an index CSV + timestamp deltas, applies channel scaling/normalization
   (`transformations.py`), and returns `ts`/`time_delta_input`/`forecast`/`*_latitude` tensors.
   Downstream datasets subclass this and override `__getitem__` to attach task-specific targets.
+  With `fix_corner_scaling` (config `data.fix_corner_scaling`, off by default) it recenters the
+  8 channels the released cubes have shifted by corner-anchored disk rescaling, using
+  `surya/datasets/disk_alignment.py`; `infer_file.read_hc_file` applies the same correction.
+  See `downstream_examples/ar_segmentation/KNOWN_ISSUE_channel_offset.md`.
 - `surya/utils/config.py` — `ExperimentConfig`/`DataConfig`/`ModelConfig`/`OptimizerConfig`:
   structured wrappers around the training YAML, with cross-field assertions (e.g. model
   `in_channels` must match `len(data.channels)`; linear embedding's `time_dim` must match
@@ -159,3 +163,6 @@ Two things beyond `download_data.sh` are needed (see `README.md` for full detail
 `infer.py`; `time_embedding["type"]` (`linear` vs `perceiver`) picks embedding/decoder classes
 inside `HelioSpectFormer`; `finetune: True` on `HelioSpectFormer` disables the base model's own
 unembed layer so the downstream head (`HelioSpectformer2D`/`1D`) supplies its own.
+`data.fix_corner_scaling` changes the model's inputs, so a checkpoint must be evaluated with
+the same setting it was trained with (`run_bootstrap_inference.py` reads it from each
+member's config; `infer_file.py` takes it from the config or `--fix_corner_scaling`).

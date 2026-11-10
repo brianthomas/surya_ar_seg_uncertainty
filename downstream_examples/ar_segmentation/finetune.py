@@ -31,6 +31,7 @@ from typing import Union
 import torch.nn as nn
 
 from surya.utils.data import build_scalers
+from surya.datasets.disk_alignment import corner_scaling_kwargs
 from surya.utils.distributed import (
     StatefulDistributedSampler,
     init_ddp,
@@ -538,6 +539,9 @@ def get_dataloaders(config, scalers):
         s3_boto3_max_concurrency=config["data"].get("s3_boto3_max_concurrency", 4),
         s3_boto3_part_size_mb=config["data"].get("s3_boto3_part_size_mb", 64),
     )
+    # Corner-scaling correction (off unless the config turns it on); see
+    # KNOWN_ISSUE_channel_offset.md.
+    s3_kwargs.update(corner_scaling_kwargs(config["data"]))
 
     train_dataset = ArDSDataset(
         sdo_data_root_path=config["data"]["sdo_data_root_path"],

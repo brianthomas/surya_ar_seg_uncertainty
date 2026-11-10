@@ -5,6 +5,11 @@ pipeline:
 * use average to collect results on channel by channel basis to create average mask maps
 * use false_color to create color maps   
 
+Input-channel offset (2026-11-10): 8 of the 13 input channels are shifted diagonally
+from the other 5 and from the AR masks (~0 px Jan, ~70 px Jul). All runs to date used
+uncorrected inputs. Fix behind data.fix_corner_scaling (off by default); see
+KNOWN_ISSUE_channel_offset.md before turning it on.
+
 Training Data
 
 How the 4 CSVs relate and differ:
