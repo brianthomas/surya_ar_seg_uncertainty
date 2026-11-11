@@ -69,6 +69,7 @@ import dask.base  # noqa: F401
 from dataset import ArDSDataset
 from finetune import custom_collate_fn
 from infer import load_model
+from surya.datasets.disk_alignment import corner_scaling_kwargs
 from surya.utils.data import build_scalers
 from surya.utils.distributed import StatefulDistributedSampler
 
@@ -93,6 +94,10 @@ def build_dataset(config, scalers, ar_index, sdo_index):
         s3_boto3_max_concurrency=config["data"].get("s3_boto3_max_concurrency", 4),
         s3_boto3_part_size_mb=config["data"].get("s3_boto3_part_size_mb", 64),
     )
+    # Corner-scaling correction, exactly as finetune.py:get_dataloaders applies it: a checkpoint
+    # must be scored with the setting it trained under (KNOWN_ISSUE_channel_offset.md). A no-op
+    # for every config that leaves data.fix_corner_scaling off, i.e. every run before *_pxfix.
+    s3_kwargs.update(corner_scaling_kwargs(config["data"]))
     return ArDSDataset(
         sdo_data_root_path=config["data"]["sdo_data_root_path"],
         index_path=sdo_index,

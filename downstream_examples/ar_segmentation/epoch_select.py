@@ -90,6 +90,42 @@ CONFOUND_NOTES = {
         "key is a re-selection, not a config directory, so it can never appear as an --*-arm",
         "here; the pair above is the only form this contrast takes in this script.",
     ],
+    ("672hr_stable_pxfix", "672hr_stable"): [
+        "the twin differs from its parent ONLY in data.fix_corner_scaling (plus the _pxfix job_id",
+        "and checkpoint path) -- same replicates, seed, LR schedule, epochs and LoRA; see",
+        "make_pxfix_configs.py. The pretrained backbone still learned from OFFSET inputs, so the",
+        "difference includes LoRA absorbing the pretraining-to-aligned shift, not only the cleaner",
+        "registration. Each arm must also be scored under its own setting (score_checkpoints.py",
+        "and run_bootstrap_inference.py read it from the member config).",
+    ],
+    ("168hrs_stable_pxfix", "168hrs_stable"): [
+        "the twin differs from its parent ONLY in data.fix_corner_scaling (plus the _pxfix job_id",
+        "and checkpoint path) -- same replicates, seed, LR schedule, epochs and LoRA; see",
+        "make_pxfix_configs.py. The pretrained backbone still learned from OFFSET inputs, so the",
+        "difference includes LoRA absorbing the pretraining-to-aligned shift, not only the cleaner",
+        "registration. Each arm must also be scored under its own setting (score_checkpoints.py",
+        "and run_bootstrap_inference.py read it from the member config).",
+    ],
+    ("672hr_stable_seed_diag_pxfix", "672hr_stable_seed_diag"): [
+        "the twin differs from its parent ONLY in data.fix_corner_scaling (plus the _pxfix job_id",
+        "and checkpoint path); seeds, replicates and per-member epoch budgets are copied as-is,",
+        "so any budget mix in the parent set is reproduced, not removed. Backbone caveat as for",
+        "the 672hr_stable_pxfix pair.",
+    ],
+    ("672hr_stable_seed_diag_pxfix", "672hr_stable_pxfix"): [
+        "the fix-on mirror of (672hr_stable_seed_diag, 672hr_stable): copied configs, so it",
+        "inherits that pair's confounds (see its entry) rather than being a clean seed contrast.",
+    ],
+    ("168hrs_stable_seed_diag_pxfix", "168hrs_stable_seed_diag"): [
+        "the twin differs from its parent ONLY in data.fix_corner_scaling (plus the _pxfix job_id",
+        "and checkpoint path); seeds, replicates and per-member epoch budgets are copied as-is,",
+        "so any budget mix in the parent set is reproduced, not removed. Backbone caveat as for",
+        "the 168hrs_stable_pxfix pair.",
+    ],
+    ("168hrs_stable_seed_diag_pxfix", "168hrs_stable_pxfix"): [
+        "the fix-on mirror of (168hrs_stable_seed_diag, 168hrs_stable): copied configs, so it",
+        "inherits that pair's confounds (see its entry) rather than being a clean seed contrast.",
+    ],
 }
 
 # Rule thresholds, named once so the report can print them and a reader can disagree with them
